@@ -5,6 +5,11 @@ menuconfig GOOGLE_BMS
 
 if GOOGLE_BMS
 
+config GOOGLE_BMS_SM8150
+	tristate "Google BMS SM8150"
+	help
+	  Say Y here to choose the Google BMS funtions for SM8150 platform.
+
 config GOOGLE_BMS_SM7250
 	tristate "Google BMS SM7250"
 	help

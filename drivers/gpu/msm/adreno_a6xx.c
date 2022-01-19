@@ -640,8 +640,6 @@ static void a6xx_start(struct adreno_device *adreno_dev)
 		patch_reglist = true;
 	}
 
-	a6xx_preemption_start(adreno_dev);
-
 	/*
 	 * We start LM here because we want all the following to be up
 	 * 1. GX HS
@@ -890,6 +888,8 @@ static int a6xx_rb_start(struct adreno_device *adreno_dev)
 	struct adreno_firmware *fw = ADRENO_FW(adreno_dev, ADRENO_FW_SQE);
 	uint64_t addr;
 	int ret;
+
+	a6xx_preemption_start(adreno_dev);
 
 	addr = SCRATCH_RPTR_GPU_ADDR(device, rb->id);
 

@@ -1,5 +1,6 @@
 obj-$(CONFIG_GOOGLE_BMS)	+= google-bms.o
 google-bms-objs += gbms_storage.o gvotable.o google_bms.o
+obj-$(CONFIG_GOOGLE_BMS_SM8150)	+= sm8150_bms.o
 obj-$(CONFIG_GOOGLE_BMS_SM7250)	+= sm7250_bms.o
 obj-$(CONFIG_GOOGLE_CHARGER)	+= google_charger.o
 obj-$(CONFIG_GOOGLE_BATTERY)	+= google-battery.o

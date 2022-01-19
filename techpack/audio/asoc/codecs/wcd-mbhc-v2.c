@@ -24,6 +24,7 @@
 #include <asoc/wcdcal-hwdep.h>
 #include "wcd-mbhc-legacy.h"
 #include "wcd-mbhc-adc.h"
+#include "bolero/bolero-cdc.h"
 #include <asoc/wcd-mbhc-v2-api.h>
 
 struct mutex hphl_pa_lock;
@@ -562,6 +563,9 @@ void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 	pr_debug("%s: enter insertion %d hph_status %x\n",
 		 __func__, insertion, mbhc->hph_status);
 	if (!insertion) {
+		if (mbhc->hph_status  == SND_JACK_HEADSET) {
+			bolero_tx_macro_mute_hs();
+		}
 		/* Report removal */
 		mbhc->hph_status &= ~jack_type;
 		/*

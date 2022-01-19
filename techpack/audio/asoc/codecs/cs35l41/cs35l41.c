@@ -364,7 +364,10 @@ static int cs35l41_hibernate_force_wake_put(struct snd_kcontrol *kcontrol,
 	unsigned int amp_active;
 
 	regmap_read(cs35l41->regmap, CS35L41_PWR_CTRL1, &amp_active);
+	dev_info(cs35l41->dev, "hb force wake %d from hibernate state %d\n",
+		cs35l41->hibernate_force_wake, cs35l41->amp_hibernate);
 
+	mutex_lock(&cs35l41->hb_forcewake_lock);
 	if (cs35l41->amp_hibernate == CS35L41_HIBERNATE_AWAKE ||
 		(cs35l41->amp_hibernate == CS35L41_HIBERNATE_NOT_LOADED &&
 		 cs35l41->dsp.running)) {
@@ -387,7 +390,7 @@ static int cs35l41_hibernate_force_wake_put(struct snd_kcontrol *kcontrol,
 			mutex_unlock(&cs35l41->hb_lock);
 		}
 	}
-
+	mutex_unlock(&cs35l41->hb_forcewake_lock);
 	return 0;
 }
 
@@ -1471,6 +1474,7 @@ static const struct snd_kcontrol_new cs35l41_aud_controls[] = {
 	SOC_SINGLE("Boost Class-H Tracking Enable",
 					CS35L41_BSTCVRT_VCTRL2, 0, 1, 0),
 	SOC_SINGLE("Boost Target Voltage", CS35L41_BSTCVRT_VCTRL1, 0, 0xAA, 0),
+	SOC_SINGLE("Noise Gate", CS35L41_NG_CFG, 0, 0x3FFF, 0),
 	SOC_SINGLE("AMP Enable", CS35L41_PWR_CTRL2, 0, 1, 0),
 	WM_ADSP2_PRELOAD_SWITCH("DSP1", 1),
 	WM_ADSP_FW_CONTROL("DSP1", 0),
@@ -1817,10 +1821,10 @@ static int cs35l41_hibernate(struct snd_soc_dapm_widget *w,
 	struct cs35l41_private *cs35l41 =
 		snd_soc_component_get_drvdata(component);
 	int ret = 0;
-
+	dev_info(cs35l41->dev, "%s event 0x%x hibernate state %d\n",
+		__func__, event, cs35l41->amp_hibernate);
 	if (!cs35l41->dsp.running ||
-	     cs35l41->amp_hibernate == CS35L41_HIBERNATE_INCOMPATIBLE ||
-	     cs35l41->hibernate_force_wake)
+	     cs35l41->amp_hibernate == CS35L41_HIBERNATE_INCOMPATIBLE)
 		return 0;
 
 	switch (event) {
@@ -1831,8 +1835,11 @@ static int cs35l41_hibernate(struct snd_soc_dapm_widget *w,
 		mutex_unlock(&cs35l41->hb_lock);
 		break;
 	case SND_SOC_DAPM_POST_PMD:
-		queue_delayed_work(cs35l41->wq, &cs35l41->hb_work,
-					msecs_to_jiffies(2000));
+		mutex_lock(&cs35l41->hb_forcewake_lock);
+		if (!cs35l41->hibernate_force_wake)
+			queue_delayed_work(cs35l41->wq, &cs35l41->hb_work,
+						msecs_to_jiffies(2000));
+		mutex_unlock(&cs35l41->hb_forcewake_lock);
 		break;
 	default:
 		dev_err(cs35l41->dev, "Invalid event = 0x%x\n", event);
@@ -3283,7 +3290,7 @@ static int cs35l41_enter_hibernate(struct cs35l41_private *cs35l41)
 {
 	int i;
 
-	dev_dbg(cs35l41->dev, "%s: hibernate state %d\n",
+	dev_info(cs35l41->dev, "%s: hibernate state %d\n",
 		__func__, cs35l41->amp_hibernate);
 
 	if (cs35l41->amp_hibernate == CS35L41_HIBERNATE_STANDBY)
@@ -3337,7 +3344,7 @@ static int cs35l41_exit_hibernate(struct cs35l41_private *cs35l41)
 	u8 total_trim_cache_reg_size = 0;
 	u32 *p_trim_data = NULL;
 
-	dev_dbg(cs35l41->dev, "%s: hibernate state %d\n",
+	dev_info(cs35l41->dev, "%s: hibernate state %d\n",
 		__func__, cs35l41->amp_hibernate);
 
 	if (cs35l41->amp_hibernate != CS35L41_HIBERNATE_STANDBY)
@@ -3524,19 +3531,6 @@ static int cs35l41_restore(struct cs35l41_private *cs35l41)
 		regid, reg_revid);
 
 	cs35l41_set_pdata(cs35l41);
-
-	/* Restore cached values set by ALSA during or before amp reset */
-
-	regmap_update_bits(cs35l41->regmap,
-			CS35L41_SP_FRAME_RX_SLOT,
-			CS35L41_ASP_RX1_SLOT_MASK,
-			((cs35l41->pdata.right_channel) ? 1 : 0)
-			<< CS35L41_ASP_RX1_SLOT_SHIFT);
-	regmap_update_bits(cs35l41->regmap,
-			CS35L41_SP_FRAME_RX_SLOT,
-			CS35L41_ASP_RX2_SLOT_MASK,
-			((cs35l41->pdata.right_channel) ? 0 : 1)
-			<< CS35L41_ASP_RX2_SLOT_SHIFT);
 
 	if (cs35l41->reset_cache.extclk_cfg) {
 	/* These values are already cached in cs35l41_private struct */
@@ -3846,10 +3840,13 @@ int cs35l41_probe(struct cs35l41_private *cs35l41,
 			goto err;
 		}
 
-		if (cs35l41->pdata.hibernate_enable)
+		if (cs35l41->pdata.hibernate_enable) {
 			cs35l41->amp_hibernate = CS35L41_HIBERNATE_NOT_LOADED;
-		else
+			cs35l41->hibernate_force_wake = 1;
+		} else {
 			cs35l41->amp_hibernate = CS35L41_HIBERNATE_INCOMPATIBLE;
+			cs35l41->hibernate_force_wake = 0;
+		}
 
 		cs35l41->reset_cache.extclk_cfg = false;
 		cs35l41->reset_cache.asp_wl = -1;
@@ -3912,6 +3909,7 @@ int cs35l41_probe(struct cs35l41_private *cs35l41,
 
 	INIT_DELAYED_WORK(&cs35l41->hb_work, cs35l41_hibernate_work);
 	mutex_init(&cs35l41->hb_lock);
+	mutex_init(&cs35l41->hb_forcewake_lock);
 
 #if IS_ENABLED(CONFIG_SND_SOC_CODEC_DETECT)
 	cs35l41_misc_init(cs35l41);
@@ -3929,6 +3927,7 @@ int cs35l41_remove(struct cs35l41_private *cs35l41)
 #endif
 	destroy_workqueue(cs35l41->wq);
 	mutex_destroy(&cs35l41->hb_lock);
+	mutex_destroy(&cs35l41->hb_forcewake_lock);
 	destroy_workqueue(cs35l41->vol_ctl.ramp_wq);
 	mutex_destroy(&cs35l41->vol_ctl.vol_mutex);
 	regmap_write(cs35l41->regmap, CS35L41_IRQ1_MASK1, 0xFFFFFFFF);
