@@ -2799,7 +2799,6 @@ static struct sock *udp_get_first(struct seq_file *seq, int start)
 				goto found;
 		}
 		spin_unlock_bh(&hslot->lock);
-		cond_resched();
 	}
 	sk = NULL;
 found:

@@ -1534,6 +1534,26 @@ static int fts_reset_mode(int mode)
 
 	return 0;
 }
+
+/*
+ * Get all mode from xiaomi touch interfaces and then update to the mode data
+ * by calling fts_update_touchmode_data function
+ */
+static int fts_get_mode_all_data(void)
+{
+	int i = 0;
+
+	for (i = 0; i < Touch_Mode_NUM; i++) {
+		xiaomi_touch_interfaces.touch_mode[i][GET_CUR_VALUE] =
+			xiaomi_touch_interfaces.touch_mode[i][SET_CUR_VALUE];
+	}
+
+	FTS_INFO("%s, mode:%d\n",  __func__, i);
+	fts_update_touchmode_data(i);
+
+	return 0;
+}
+
 #endif
 #endif
 
@@ -2287,14 +2307,6 @@ static int fts_ts_probe(struct i2c_client *client, const struct i2c_device_id *i
 		goto err_debugfs_create;
 	}
 
-	/*
-	 * This *must* be done before request_threaded_irq is called.
-	 * Otherwise, if an interrupt is received before request is added,
-	 * but after the interrupt has been subscribed to, pm_qos_req
-	 * may be accessed before initialization in the interrupt handler.
-	 */
-	pm_qos_add_request(&ts_data->pm_qos_req, PM_QOS_CPU_DMA_LATENCY,
-			PM_QOS_DEFAULT_VALUE);
 	INIT_WORK(&ts_data->resume_work, fts_resume_work);
 	INIT_WORK(&ts_data->suspend_work, fts_suspend_work);
 	INIT_WORK(&ts_data->power_supply_work, fts_power_supply_work);
@@ -2395,7 +2407,6 @@ err_power_init:
 err_gpio_config:
 	kfree_safe(ts_data->point_buf);
 	kfree_safe(ts_data->events);
-	pm_qos_remove_request(&ts_data->pm_qos_req);
 	input_unregister_device(ts_data->input_dev);
 err_input_init:
 	if (ts_data->ts_workqueue)
@@ -2451,7 +2462,6 @@ static int fts_ts_remove(struct i2c_client *client)
 #endif
 
 	backlight_unregister_notifier(&ts_data->bl_notif);
-	pm_qos_remove_request(&ts_data->pm_qos_req);
 	power_supply_unreg_notifier(&ts_data->power_supply_notifier);
 #if defined(CONFIG_DRM) && defined(DRM_ADD_COMPLETE)
 	if (mi_drm_unregister_client(&ts_data->fb_notif))
@@ -2787,6 +2797,16 @@ static int fts_pm_resume(struct device *dev)
 #if (!IS_ENABLED(CONFIG_TOUCHSCREEN_FTS_FOD))
 	}
 #endif
+
+	/*
+	 * Reapply Philistine Mode after resuming from PM suspend
+	 * by invoking fts_update_touchmode_data(mode) function, requires
+	 * CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE enabled
+	 */
+#if (IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE))
+	fts_get_mode_all_data();
+#endif
+
 	complete(&ts_data->dev_pm_suspend_completion);
 	return 0;
 }

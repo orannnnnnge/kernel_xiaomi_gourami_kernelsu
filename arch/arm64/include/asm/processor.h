@@ -32,6 +32,14 @@
  */
 #define current_text_addr() ({ __label__ _l; _l: &&_l;})
 
+/*
+ * On arm64 systems, unaligned accesses by the CPU are cheap, and so there is
+ * no point in shifting all network buffers by 2 bytes just to make some IP
+ * header fields appear aligned in memory, potentially sacrificing some DMA
+ * performance on some platforms.
+ */
+#define NET_IP_ALIGN	0
+
 #ifdef __KERNEL__
 
 #include <linux/build_bug.h>

@@ -95,6 +95,7 @@ static void fts_read_palm_data(u8 reg_value);
 static int fts_palm_sensor_cmd(int value);
 static void fts_palm_mode_recovery(struct fts_ts_data *ts_data);
 static void fts_game_mode_recovery(struct fts_ts_data *ts_data);
+static void fts_update_touchmode_data(struct fts_ts_data *ts_data);
 
 #define PANEL_ORIENTATION_DEGREE_0 	0	/* normal portrait orientation */
 #define PANEL_ORIENTATION_DEGREE_90	1	/* anticlockwise 90 degrees */
@@ -1968,6 +1969,8 @@ static int fts_ts_resume(struct device *dev)
 		FTS_INFO("palm sensor OFF, switch to ON");
 		fts_palm_sensor_cmd(1);
 	}
+	/* Update Touchmode Data */
+	fts_update_touchmode_data(ts_data);
 #endif
 
 	if (ts_data->gesture_mode && !ts_data->poweroff_on_sleep) {
@@ -2202,8 +2205,6 @@ static void fts_update_touchmode_data(struct fts_ts_data *ts_data)
 	int ret = 0;
 	int mode = 0;
 	u8 mode_set_value = 0;
-	u8 mode_addr = 0;
-	bool game_mode_state_change = false;
 	u8 cmd[7] = {0xc1, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
 
 #if defined(CONFIG_PM) && FTS_PATCH_COMERR_PM
@@ -2224,58 +2225,20 @@ static void fts_update_touchmode_data(struct fts_ts_data *ts_data)
 				cmd[0], cmd[1], cmd[2], cmd[3], cmd[4], cmd[5], cmd[6]);
 
 		for (mode = Touch_Game_Mode; mode <= Touch_Expert_Mode; mode++) {
-			if (mode == Touch_Game_Mode &&
-				(xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE] !=
-					xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE])) {
-					game_mode_state_change = true;
-					fts_data->gamemode_enabled = xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE];
-			}
 			xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE] =
 				xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE];
 		}
 	}
 
-	mode = Touch_Panel_Orientation;
-	mode_set_value = xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE];
-	if (mode_set_value != xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE] ||
-			game_mode_state_change) {
-		mode_addr = FTS_REG_ORIENTATION;
-		game_mode_state_change = false;
-		if (PANEL_ORIENTATION_DEGREE_0 == mode_set_value ||
-				PANEL_ORIENTATION_DEGREE_180 == mode_set_value) {
-			mode_set_value = ORIENTATION_0_OR_180;
-		} else if (PANEL_ORIENTATION_DEGREE_90 == mode_set_value) {
-			mode_set_value = fts_data->gamemode_enabled ?
-				GAME_ORIENTATION_90 : NORMAL_ORIENTATION_90;
-		} else if (PANEL_ORIENTATION_DEGREE_270 == mode_set_value) {
-			mode_set_value = fts_data->gamemode_enabled ?
-				GAME_ORIENTATION_270 : NORMAL_ORIENTATION_270;
-		}
-		ret = fts_write_reg(mode_addr, mode_set_value);
-		if (ret < 0) {
-			FTS_ERROR("write touch mode:%d reg failed", mode);
-		} else {
-			FTS_INFO("write touch mode:%d, value: %d, addr:0x%02X",
-				mode, mode_set_value, mode_addr);
-			xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE] =
-				xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE];
-		}
-	}
+	mode_set_value = xiaomi_touch_interfaces.touch_mode[Touch_Panel_Orientation][SET_CUR_VALUE];
+	ret = fts_write_reg(FTS_REG_ORIENTATION, mode_set_value);
+	if (ret < 0)
+		FTS_ERROR("write touch orient:%d reg failed", ret);
 
-	mode = Touch_Edge_Filter;
-	mode_set_value = xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE];
-	if (mode_set_value != xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE]) {
-		mode_addr = FTS_REG_EDGE_FILTER_LEVEL;
-		ret = fts_write_reg(mode_addr, mode_set_value);
-		if (ret < 0) {
-			FTS_ERROR("write touch mode:%d reg failed", mode);
-		} else {
-			FTS_INFO("write touch mode:%d, value: %d, addr:0x%02X",
-				mode, mode_set_value, mode_addr);
-			xiaomi_touch_interfaces.touch_mode[mode][GET_CUR_VALUE] =
-				xiaomi_touch_interfaces.touch_mode[mode][SET_CUR_VALUE];
-		}
-	}
+	mode_set_value = xiaomi_touch_interfaces.touch_mode[Touch_Edge_Filter][SET_CUR_VALUE];
+	ret = fts_write_reg(FTS_REG_EDGE_FILTER_LEVEL, mode_set_value);
+	if (ret < 0)
+		FTS_ERROR("Write edge filter error, ret=%d\n", ret);
 
 	mutex_unlock(&ts_data->cmd_update_mutex);
 	pm_relax(ts_data->dev);
@@ -2328,7 +2291,6 @@ static int fts_reset_mode(int mode)
 {
 	if (mode == Touch_Game_Mode) {
 		fts_restore_normal_mode();
-		fts_data->gamemode_enabled = false;
 		fts_data->is_expert_mode = false;
 	} else if (mode < Touch_Mode_NUM) {
 		fts_restore_mode_value(mode, GET_DEF_VALUE);

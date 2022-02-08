@@ -2056,7 +2056,6 @@ get_sk:
 			return sk;
 	}
 	spin_unlock(&ilb->lock);
-	cond_resched();
 	st->offset = 0;
 	if (++st->bucket < INET_LHTABLE_SIZE)
 		goto get_head;
@@ -2115,7 +2114,6 @@ static void *established_get_first(struct seq_file *seq)
 			goto out;
 		}
 		spin_unlock_bh(lock);
-		cond_resched();
 	}
 out:
 	return rc;
@@ -2579,7 +2577,7 @@ static int __net_init tcp_sk_init(struct net *net)
 	net->ipv4.sysctl_tcp_timestamps = 1;
 	net->ipv4.sysctl_tcp_early_retrans = 3;
 	net->ipv4.sysctl_tcp_recovery = TCP_RACK_LOSS_DETECTION;
-	net->ipv4.sysctl_tcp_slow_start_after_idle = 0; /* We won't follow default RFC2861 behavior. */
+	net->ipv4.sysctl_tcp_slow_start_after_idle = 1; /* By default, RFC2861 behavior.  */
 	net->ipv4.sysctl_tcp_retrans_collapse = 1;
 	net->ipv4.sysctl_tcp_max_reordering = 300;
 	net->ipv4.sysctl_tcp_dsack = 1;

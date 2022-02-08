@@ -2,8 +2,6 @@
 BUILD_INITRAMFS=0
 EXT_MODULES="
 private/msm-google-modules/wlan/qcacld-3.0
-private/msm-google-modules/data-kernel/drivers/rmnet/perf
-private/msm-google-modules/data-kernel/drivers/rmnet/shs
 "
 
 if [ -n "${BUILD_BOOT_IMG}" ]; then
