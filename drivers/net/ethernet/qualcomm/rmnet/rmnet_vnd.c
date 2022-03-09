@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * RMNET Data virtual network driver
  *
@@ -8,6 +8,8 @@
 #include <linux/etherdevice.h>
 #include <linux/if_arp.h>
 #include <linux/ip.h>
+#include <linux/ipv6.h>
+#include <linux/tcp.h>
 #include <net/pkt_sched.h>
 #include "rmnet_config.h"
 #include "rmnet_handlers.h"
@@ -15,10 +17,11 @@
 #include "rmnet_map.h"
 #include "rmnet_vnd.h"
 #include "rmnet_genl.h"
-#include "rmnet_trace.h"
 
 #include <soc/qcom/qmi_rmnet.h>
 #include <soc/qcom/rmnet_qmi.h>
+#include <trace/events/skb.h>
+#include "rmnet_trace.h"
 
 /* RX/TX Fixup */
 
@@ -57,6 +60,7 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 	int ip_type;
 	u32 mark;
 	unsigned int len;
+	bool need_to_drop = false;
 
 	priv = netdev_priv(dev);
 	if (priv->real_dev) {
@@ -65,6 +69,14 @@ static netdev_tx_t rmnet_vnd_start_xmit(struct sk_buff *skb,
 		mark = skb->mark;
 		len = skb->len;
 		trace_rmnet_xmit_skb(skb);
+
+		qmi_rmnet_get_flow_state(dev, skb, &need_to_drop);
+		if (unlikely(need_to_drop)) {
+			this_cpu_inc(priv->pcpu_stats->stats.tx_drops);
+			kfree_skb(skb);
+			return NETDEV_TX_OK;
+		}
+
 		rmnet_egress_handler(skb);
 		qmi_rmnet_burst_fc_check(dev, ip_type, mark, len);
 		qmi_rmnet_work_maybe_restart(rmnet_get_rmnet_port(dev));
@@ -117,7 +129,7 @@ static void rmnet_vnd_uninit(struct net_device *dev)
 	gro_cells_destroy(&priv->gro_cells);
 	free_percpu(priv->pcpu_stats);
 
-	qos = priv->qos_info;
+	qos = rcu_dereference(priv->qos_info);
 	RCU_INIT_POINTER(priv->qos_info, NULL);
 	qmi_rmnet_qos_exit_pre(qos);
 }
@@ -158,11 +170,30 @@ static u16 rmnet_vnd_select_queue(struct net_device *dev,
 				  struct net_device *sb_dev,
 				  select_queue_fallback_t fallback)
 {
+	struct rmnet_priv *priv = netdev_priv(dev);
 	u64 boost_period = 0;
 	int boost_trigger = 0;
-	struct rmnet_priv *priv = netdev_priv(dev);
 	int txq = 0;
 
+	if (trace_print_skb_gso_enabled()) {
+		if (!skb_shinfo(skb)->gso_size)
+			goto skip_trace;
+
+		if (skb->protocol == htons(ETH_P_IP)) {
+			if (ip_hdr(skb)->protocol != IPPROTO_TCP)
+				goto skip_trace;
+		}
+
+		if (skb->protocol == htons(ETH_P_IPV6)) {
+			if (ipv6_hdr(skb)->nexthdr != IPPROTO_TCP)
+				goto skip_trace;
+		}
+
+		trace_print_skb_gso(skb, tcp_hdr(skb)->source,
+				    tcp_hdr(skb)->dest);
+	}
+
+skip_trace:
 	if (priv->real_dev)
 		txq = qmi_rmnet_get_queue(dev, skb);
 
@@ -173,7 +204,7 @@ static u16 rmnet_vnd_select_queue(struct net_device *dev,
 						 &boost_period);
 
 		if (boost_trigger)
-			set_task_boost(1, boost_period);
+			(void) boost_period;
 	}
 
 	return (txq < dev->real_num_tx_queues) ? txq : 0;
@@ -328,7 +359,7 @@ void rmnet_vnd_setup(struct net_device *rmnet_dev)
 	rmnet_dev->netdev_ops = &rmnet_vnd_ops;
 	rmnet_dev->mtu = RMNET_DFLT_PACKET_SIZE;
 	rmnet_dev->needed_headroom = RMNET_NEEDED_HEADROOM;
-	random_ether_addr(rmnet_dev->dev_addr);
+	random_ether_addr(rmnet_dev->perm_addr);
 	rmnet_dev->tx_queue_len = RMNET_TX_QUEUE_LEN;
 
 	/* Raw IP mode */
@@ -373,7 +404,8 @@ int rmnet_vnd_newlink(u8 id, struct net_device *rmnet_dev,
 		rmnet_dev->rtnl_link_ops = &rmnet_link_ops;
 
 		priv->mux_id = id;
-		priv->qos_info = qmi_rmnet_qos_init(real_dev, rmnet_dev, id);
+		rcu_assign_pointer(priv->qos_info,
+			qmi_rmnet_qos_init(real_dev, rmnet_dev, id));
 
 		netdev_dbg(rmnet_dev, "rmnet dev created\n");
 	}
@@ -413,4 +445,12 @@ int rmnet_vnd_do_flow_control(struct net_device *rmnet_dev, int enable)
 		netif_stop_queue(rmnet_dev);
 
 	return 0;
+}
+
+void rmnet_vnd_reset_mac_addr(struct net_device *dev)
+{
+	if (dev->netdev_ops != &rmnet_vnd_ops)
+		return;
+
+	random_ether_addr(dev->perm_addr);
 }

@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <net/pkt_sched.h>
+#include <linux/module.h>
+#include "dfc_defs.h"
+#include <soc/qcom/rmnet_ctl.h>
 #include <soc/qcom/rmnet_qmi.h>
 #include <soc/qcom/qmi_rmnet.h>
 #include <trace/events/dfc.h>
-#include <soc/qcom/rmnet_ctl.h>
-#include "dfc_defs.h"
 
 #define QMAP_DFC_VER		1
 
@@ -126,7 +128,11 @@ static struct dfc_tx_link_status_ind_msg_v01 qmap_tx_ind;
 static struct dfc_qmi_data __rcu *qmap_dfc_data;
 static atomic_t qmap_txid;
 static void *rmnet_ctl_handle;
+static bool dfc_config_acked;
 
+static struct rmnet_ctl_client_if *rmnet_ctl;
+
+static void dfc_qmap_send_config(struct dfc_qmi_data *data);
 static void dfc_qmap_send_end_marker_cnf(struct qos_info *qos,
 					 u8 bearer_id, u16 seq, u32 tx_id);
 
@@ -134,10 +140,13 @@ static void dfc_qmap_send_cmd(struct sk_buff *skb)
 {
 	trace_dfc_qmap(skb->data, skb->len, false);
 
-	if (rmnet_ctl_send_client(rmnet_ctl_handle, skb)) {
-		pr_err("Failed to send to rmnet ctl\n");
+	if (unlikely(!rmnet_ctl || !rmnet_ctl->send)) {
 		kfree_skb(skb);
+		return;
 	}
+
+	if (rmnet_ctl->send(rmnet_ctl_handle, skb))
+		pr_err("Failed to send to rmnet ctl\n");
 }
 
 static void dfc_qmap_send_inband_ack(struct dfc_qmi_data *dfc,
@@ -150,7 +159,9 @@ static void dfc_qmap_send_inband_ack(struct dfc_qmi_data *dfc,
 	skb->protocol = htons(ETH_P_MAP);
 	skb->dev = rmnet_get_real_dev(dfc->rmnet_port);
 
-	rmnet_ctl_log_debug("TXI", skb->data, skb->len);
+	if (likely(rmnet_ctl && rmnet_ctl->log))
+		rmnet_ctl->log(RMNET_CTL_LOG_DEBUG, "TXI", 0,
+			       skb->data, skb->len);
 	trace_dfc_qmap(skb->data, skb->len, false);
 	dev_queue_xmit(skb);
 }
@@ -313,6 +324,9 @@ static void dfc_qmap_cmd_handler(struct sk_buff *skb)
 		if (cmd->cmd_type != QMAP_CMD_ACK)
 			goto free_skb;
 	} else if (cmd->cmd_type != QMAP_CMD_REQUEST) {
+		if (cmd->cmd_type == QMAP_CMD_ACK &&
+		    cmd->cmd_name == QMAP_DFC_CONFIG)
+			dfc_config_acked = true;
 		goto free_skb;
 	}
 
@@ -322,6 +336,12 @@ static void dfc_qmap_cmd_handler(struct sk_buff *skb)
 	if (!dfc || READ_ONCE(dfc->restart_state)) {
 		rcu_read_unlock();
 		goto free_skb;
+	}
+
+	/* Re-send DFC config once if needed */
+	if (unlikely(!dfc_config_acked)) {
+		dfc_qmap_send_config(dfc);
+		dfc_config_acked = true;
 	}
 
 	switch (cmd->cmd_name) {
@@ -446,7 +466,9 @@ static void dfc_qmap_send_end_marker_cnf(struct qos_info *qos,
 	skb->dev = qos->real_dev;
 
 	/* This cmd needs to be sent in-band */
-	rmnet_ctl_log_info("TXI", skb->data, skb->len);
+	if (likely(rmnet_ctl && rmnet_ctl->log))
+		rmnet_ctl->log(RMNET_CTL_LOG_INFO, "TXI", 0,
+			       skb->data, skb->len);
 	trace_dfc_qmap(skb->data, skb->len, false);
 	rmnet_map_tx_qmap_cmd(skb);
 }
@@ -477,6 +499,11 @@ int dfc_qmap_client_init(void *port, int index, struct svc_info *psvc,
 	if (!port || !qmi)
 		return -EINVAL;
 
+	/* Prevent double init */
+	data = rcu_dereference(qmap_dfc_data);
+	if (data)
+		return -EINVAL;
+
 	data = kzalloc(sizeof(struct dfc_qmi_data), GFP_KERNEL);
 	if (!data)
 		return -ENOMEM;
@@ -490,7 +517,15 @@ int dfc_qmap_client_init(void *port, int index, struct svc_info *psvc,
 
 	atomic_set(&qmap_txid, 0);
 
-	rmnet_ctl_handle = rmnet_ctl_register_client(&cb);
+	rmnet_ctl = rmnet_ctl_if();
+	if (!rmnet_ctl) {
+		pr_err("rmnet_ctl module not loaded\n");
+		goto out;
+	}
+
+	if (rmnet_ctl->reg)
+		rmnet_ctl_handle = rmnet_ctl->reg(&cb);
+
 	if (!rmnet_ctl_handle)
 		pr_err("Failed to register with rmnet ctl\n");
 
@@ -499,8 +534,10 @@ int dfc_qmap_client_init(void *port, int index, struct svc_info *psvc,
 
 	pr_info("DFC QMAP init\n");
 
+	dfc_config_acked = false;
 	dfc_qmap_send_config(data);
 
+out:
 	return 0;
 }
 
@@ -515,13 +552,16 @@ void dfc_qmap_client_exit(void *dfc_data)
 
 	trace_dfc_client_state_down(data->index, 0);
 
-	rmnet_ctl_unregister_client(rmnet_ctl_handle);
+	if (rmnet_ctl && rmnet_ctl->dereg)
+		rmnet_ctl->dereg(rmnet_ctl_handle);
+	rmnet_ctl_handle = NULL;
 
 	WRITE_ONCE(data->restart_state, 1);
 	RCU_INIT_POINTER(qmap_dfc_data, NULL);
 	synchronize_rcu();
 
 	kfree(data);
+	rmnet_ctl = NULL;
 
 	pr_info("DFC QMAP exit\n");
 }

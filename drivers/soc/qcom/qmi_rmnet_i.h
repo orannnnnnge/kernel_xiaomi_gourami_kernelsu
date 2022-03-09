@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
  * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
@@ -10,6 +10,7 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/timer.h>
+#include <linux/pm_wakeup.h>
 
 #define MAX_MQ_NUM 16
 #define MAX_CLIENT_NUM 2
@@ -21,8 +22,6 @@
 #define ACK_MQ_OFFSET (MAX_MQ_NUM - 1)
 #define INVALID_MQ 0xFF
 
-#define DFC_MODE_FLOW_ID 2
-#define DFC_MODE_MQ_NUM 3
 #define DFC_MODE_SA 4
 
 extern int dfc_mode;
@@ -72,6 +71,7 @@ struct svc_info {
 
 struct mq_map {
 	struct rmnet_bearer_map *bearer;
+	bool drop_on_remove;
 };
 
 struct qos_info {
@@ -98,6 +98,8 @@ struct qmi_info {
 	bool ps_enabled;
 	bool dl_msg_active;
 	bool ps_ignore_grant;
+	bool wakelock_active;
+	struct wakeup_source *ws;
 };
 
 enum data_ep_type_enum_v01 {
@@ -215,6 +217,7 @@ wda_qmi_client_init(void *port, struct svc_info *psvc, struct qmi_info *qmi);
 void wda_qmi_client_exit(void *wda_data);
 int wda_set_powersave_mode(void *wda_data, u8 enable);
 void qmi_rmnet_flush_ps_wq(void);
+void wda_qmi_client_release(void *wda_data);
 #else
 static inline int
 wda_qmi_client_init(void *port, struct svc_info *psvc, struct qmi_info *qmi)
@@ -231,6 +234,9 @@ static inline int wda_set_powersave_mode(void *wda_data, u8 enable)
 	return -EINVAL;
 }
 static inline void qmi_rmnet_flush_ps_wq(void)
+{
+}
+static inline void wda_qmi_client_release(void *wda_data)
 {
 }
 #endif

@@ -20,6 +20,7 @@
 #include "fg-core.h"
 #include "fg-reg.h"
 #include "fg-alg.h"
+#include "../google/google_bms.h"
 
 #define FG_GEN4_DEV_NAME	"qcom,fg-gen4"
 #define TTF_AWAKE_VOTER		"fg_ttf_awake"
@@ -208,7 +209,6 @@
 #define BATT_PROFILE_RETRY_COUNT_MAX 5
 #define DS_PAGE0_COUNT_MAX 5
 #define DS_ROMID_COUNT_MAX 5
-#define MAX_CYCLE_COUNT_CHECK 5
 #define DS_STATUS_COUNT_MAX 5
 #endif
 
@@ -272,6 +272,9 @@ struct fg_dt_props {
 	int	ki_coeff_lo_med_dchg_thr_ma;
 	int	ki_coeff_med_hi_dchg_thr_ma;
 	int	slope_limit_coeffs[SLOPE_LIMIT_NUM_COEFFS];
+#if IS_ENABLED(CONFIG_GOOGLE_BMS)
+	bool fg_cycle_disable;
+#endif
 };
 
 struct fg_gen4_chip {
@@ -344,6 +347,9 @@ struct fg_gen4_chip {
 	unsigned char		ds_page0[16];
 	unsigned char		ds_romid[8];
 	unsigned char		ds_status[8];
+#endif
+#if IS_ENABLED(CONFIG_GOOGLE_BMS)
+	char cycle_str[BUCKET_COUNT * 6 + 2];
 #endif
 };
 
@@ -1044,11 +1050,19 @@ static int fg_gen4_get_prop_real_capacity(struct fg_dev *fg, int *val)
 static int fg_gen4_get_prop_capacity_raw(struct fg_gen4_chip *chip, int *val)
 {
 	struct fg_dev *fg = &chip->fg;
-	int rc;
+	int rc, msoc;
+
+	rc = fg_get_msoc(fg, &msoc);
+	if (rc < 0)
+		return rc;
+
+	/* return if msoc is less than 10% */
+	if (msoc < 10)
+		return -EINVAL;
 
 	if (!chip->dt.soc_hi_res) {
-		rc = fg_get_msoc_raw(fg, val);
-		return rc;
+		*val = (msoc * 256); 	   // Multiply the raw msoc by 256 to get a raw capacity
+		return 0;
 	}
 
 	if (!is_input_present(fg)) {
@@ -2578,10 +2592,11 @@ static void fg_gen4_post_profile_load(struct fg_gen4_chip *chip)
 	}
 
 	/* Restore the cycle counters so that it would be valid at this point */
-	rc = restore_cycle_count(chip->counter);
-	if (rc < 0)
-		pr_err("Error in restoring cycle_count, rc=%d\n", rc);
-
+	if (!chip->dt.fg_cycle_disable) {
+		rc = restore_cycle_count(chip->counter);
+		if (rc < 0)
+			pr_err("Error in restoring cycle_count, rc=%d\n", rc);
+	}
 }
 
 static void profile_load_work(struct work_struct *work)
@@ -2617,7 +2632,7 @@ static void profile_load_work(struct work_struct *work)
 	if (!is_profile_load_required(chip))
 		goto done;
 
-	if (!chip->dt.multi_profile_load) {
+	if (!chip->dt.multi_profile_load && !chip->dt.fg_cycle_disable) {
 		clear_cycle_count(chip->counter);
 		if (chip->fg_nvmem && !is_sdam_cookie_set(chip))
 			fg_gen4_clear_sdam(chip);
@@ -3844,9 +3859,11 @@ static irqreturn_t fg_delta_msoc_irq_handler(int irq, void *data)
 	if (rc < 0)
 		pr_err("Error in charge_full_update, rc=%d\n", rc);
 
-	rc = fg_gen4_esr_soh_update(fg);
-	if (rc < 0)
-		pr_err("Error in updating ESR for SOH, rc=%d\n", rc);
+	if (!chip->dt.fg_cycle_disable) {
+		rc = fg_gen4_esr_soh_update(fg);
+		if (rc < 0)
+			pr_err("Error in updating ESR for SOH, rc=%d\n", rc);
+	}
 
 	rc = fg_gen4_update_maint_soc(fg);
 	if (rc < 0)
@@ -4409,50 +4426,6 @@ static void ds_page0_work(struct work_struct *work)
 			pval.arrayval[12], pval.arrayval[13], pval.arrayval[14], pval.arrayval[15]);
 	}
 }
-
-static int sync_cycle_count(struct fg_gen4_chip *chip)
-{
-	struct fg_dev *fg = &chip->fg;
-	union power_supply_propval prop = {0, };
-	static int cycle_count_check;
-	int cycle_count;
-
-	get_cycle_count(chip->counter, &cycle_count);
-	if (!fg->max_verify_psy) {
-		fg->max_verify_psy = power_supply_get_by_name("batt_verify");
-		if (!fg->max_verify_psy) {
-			pr_err("Could not find batt_verify_psy\n");
-			return -ENODEV;
-		}
-	}
-
-	if (fg->cycle_count == INT_MIN) {
-		if (cycle_count || cycle_count_check > MAX_CYCLE_COUNT_CHECK)
-			fg->cycle_count = cycle_count;
-		else
-			cycle_count_check++;
-	}
-
-	if (fg->maxim_cycle_count == INT_MIN) {
-		power_supply_get_property(fg->max_verify_psy,
-				POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT, &prop);
-		fg->maxim_cycle_count = prop.intval;
-	}
-
-	if (fg->cycle_count != INT_MIN && fg->cycle_count < cycle_count) {
-		prop.intval = 1;
-		power_supply_set_property(fg->max_verify_psy,
-				POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT, &prop);
-		power_supply_get_property(fg->max_verify_psy,
-				POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT, &prop);
-		fg->maxim_cycle_count = prop.intval;
-		pr_info("fg cycle_count[%d], last cycle_count[%d], dc_value[%d]\n",
-					cycle_count, fg->cycle_count, fg->maxim_cycle_count);
-		fg->cycle_count++;
-	}
-
-	return 0;
-}
 #endif
 
 static void status_change_work(struct work_struct *work)
@@ -4506,9 +4479,6 @@ static void status_change_work(struct work_struct *work)
 	qnovo_en = is_qnovo_en(fg);
 	cycle_count_update(chip->counter, (u32)batt_soc >> 24,
 		fg->charge_status, fg->charge_done, input_present);
-#ifdef CONFIG_BATT_VERIFY_BY_DS28E16
-	sync_cycle_count(chip);
-#endif
 
 	batt_soc_cp = div64_u64((u64)(u32)batt_soc * CENTI_FULL_SOC,
 				BATT_SOC_32BIT);
@@ -4741,12 +4711,34 @@ static ssize_t esr_fast_cal_en_show(struct device *dev, struct device_attribute
 }
 static DEVICE_ATTR_RW(esr_fast_cal_en);
 
+static int fg_fake_capacity = -EINVAL;
+static ssize_t fake_capacity_show(struct device *dev,
+		struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", fg_fake_capacity);
+}
+
+static ssize_t fake_capacity_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	int val;
+
+	if (kstrtos32(buf, 0, &val))
+		return -EINVAL;
+
+	fg_fake_capacity = val;
+
+	return count;
+}
+DEVICE_ATTR_RW(fake_capacity);
+
 static struct attribute *fg_attrs[] = {
 	&dev_attr_profile_dump.attr,
 	&dev_attr_sram_dump_period_ms.attr,
 	&dev_attr_sram_dump_en.attr,
 	&dev_attr_restart.attr,
 	&dev_attr_esr_fast_cal_en.attr,
+	&dev_attr_fake_capacity.attr,
 	NULL,
 };
 ATTRIBUTE_GROUPS(fg);
@@ -4809,7 +4801,10 @@ static int fg_psy_get_property(struct power_supply *psy,
 		break;
 #endif
 	case POWER_SUPPLY_PROP_CAPACITY:
-		rc = fg_gen4_get_prop_capacity(fg, &pval->intval);
+		if (fg_fake_capacity >= 0 && fg_fake_capacity <= 100)
+			pval->intval = fg_fake_capacity;
+		else
+			rc = fg_gen4_get_prop_capacity(fg, &pval->intval);
 		break;
 	case POWER_SUPPLY_PROP_REAL_CAPACITY:
 		rc = fg_gen4_get_prop_real_capacity(fg, &pval->intval);
@@ -4820,10 +4815,14 @@ static int fg_psy_get_property(struct power_supply *psy,
 		 * for google_battery supporting
 		 */
 		rc = fg_gen4_get_prop_capacity_raw(chip, &pval->intval);
-#ifdef CONFIG_GOOGLE_BMS
-		pval->intval *= 255;
-		pval->intval /= 100;
-#endif
+		if (rc < 0) {
+			rc = fg_gen4_get_prop_capacity(fg, (int *)&temp);
+			if (rc == 0)
+				pval->intval = (int)temp * 256;
+			else
+				pr_err("fg_gen4_get_prop_capacity() rc=%d\n",
+				       rc);
+		}
 		break;
 	case POWER_SUPPLY_PROP_CC_SOC:
 		rc = fg_get_sram_prop(&chip->fg, FG_SRAM_CC_SOC, &val);
@@ -4897,16 +4896,39 @@ static int fg_psy_get_property(struct power_supply *psy,
 		rc = fg_gen4_get_charge_counter_shadow(chip, &pval->intval);
 		break;
 	case POWER_SUPPLY_PROP_CYCLE_COUNT:
-#ifdef CONFIG_BATT_VERIFY_BY_DS28E16
-		pval->intval = fg->maxim_cycle_count;
-#else
-		rc = get_cycle_count(chip->counter, &pval->intval);
-#endif
+		if (chip->dt.fg_cycle_disable) {
+			u16 count[BUCKET_COUNT];
+			int id;
+
+			rc = nvmem_device_read(chip->fg_nvmem,
+				SDAM_CYCLE_COUNT_OFFSET, sizeof(count), (u8 *)count);
+			if (rc < 0)
+				break;
+			for (id = 0; id < BUCKET_COUNT; id++)
+				temp += count[id];
+			pval->intval = temp / 100;
+		} else
+			rc = get_cycle_count(chip->counter, &pval->intval);
 		break;
 	case POWER_SUPPLY_PROP_CYCLE_COUNTS:
-		rc = get_cycle_counts(chip->counter, &pval->strval);
-		if (rc < 0)
-			pval->strval = NULL;
+		if (chip->dt.fg_cycle_disable) {
+			u16 count[BUCKET_COUNT];
+
+			rc = nvmem_device_read(chip->fg_nvmem,
+				SDAM_CYCLE_COUNT_OFFSET, sizeof(count), (u8 *)count);
+			if (rc < 0) {
+				pval->strval = NULL;
+				pr_err("cycle read failed: %d\n", rc);
+				break;
+			}
+			gbms_cycle_count_cstr(chip->cycle_str,
+					      GBMS_CCBIN_CSTR_SIZE, count);
+			pval->strval = chip->cycle_str;
+		} else {
+			rc = get_cycle_counts(chip->counter, &pval->strval);
+			if (rc < 0)
+				pval->strval = NULL;
+		}
 		break;
 	case POWER_SUPPLY_PROP_SOC_REPORTING_READY:
 		pval->intval = fg->soc_reporting_ready;
@@ -5134,6 +5156,110 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_CALIBRATE,
 };
 
+#if IS_ENABLED(CONFIG_GOOGLE_BMS)
+static int fg_storage_iter(int index, gbms_tag_t *tag, void *ptr)
+{
+	static gbms_tag_t keys[] = { GBMS_TAG_BCNT };
+	const int count = ARRAY_SIZE(keys);
+
+	if (index >= 0 && index < count)
+		*tag = keys[index];
+	else
+		return -ENOENT;
+
+	return 0;
+}
+
+
+static int fg_storage_read(gbms_tag_t tag, void *buff, size_t size,
+			   void *ptr)
+{
+	int ret;
+	int offset = 0;
+	struct power_supply *bms_psy;
+	struct fg_gen4_chip *chip;
+
+	bms_psy = power_supply_get_by_name("bms");
+	if (!bms_psy) {
+		pr_err("bms psy not found\n");
+		return -ENODEV;
+	}
+
+	chip = power_supply_get_drvdata(bms_psy);
+
+	switch (tag) {
+	case GBMS_TAG_BCNT:
+		if (size != (BUCKET_COUNT * 2)) {
+			pr_err("BCNT read error size %d/%d",
+					(BUCKET_COUNT * 2), size);
+			return -ERANGE;
+		}
+
+		offset = SDAM_CYCLE_COUNT_OFFSET;
+		break;
+	default:
+		ret = -ENOENT;
+		break;
+	}
+
+	if (offset)
+		ret = nvmem_device_read(chip->fg_nvmem,
+			offset, BUCKET_COUNT * 2, (u8 *)buff);
+	if (ret < 0) {
+		pr_err("failed to read cycle counts rc=%d\n", ret);
+		return ret;
+	}
+	return ret;
+}
+
+static int fg_storage_write(gbms_tag_t tag, const void *buff, size_t size,
+				  void *ptr)
+{
+	int ret;
+	int offset = 0;
+	struct power_supply *bms_psy;
+	struct fg_gen4_chip *chip;
+
+	bms_psy = power_supply_get_by_name("bms");
+	if (!bms_psy) {
+		pr_err("bms psy not found\n");
+		return -ENODEV;
+	}
+
+	chip = power_supply_get_drvdata(bms_psy);
+
+	switch (tag) {
+	case GBMS_TAG_BCNT:
+		if (size != (BUCKET_COUNT * 2)) {
+			pr_err("BCNT write error size %d/%d",
+					(BUCKET_COUNT * 2), size);
+			return -ERANGE;
+		}
+
+		offset = SDAM_CYCLE_COUNT_OFFSET;
+		break;
+	default:
+		ret = -ENOENT;
+		break;
+	}
+
+	if (offset)
+		ret = nvmem_device_write(chip->fg_nvmem,
+			offset, BUCKET_COUNT * 2, (u8 *)buff);
+	if (ret < 0) {
+		pr_err("failed to write cycle counts rc=%d\n", ret);
+		return ret;
+	}
+	return ret;
+}
+
+static struct gbms_storage_desc fg_storage_dsc = {
+	.iter = fg_storage_iter,
+	.read = fg_storage_read,
+	.write = fg_storage_write,
+};
+#endif /* CONFIG_GOOGLE_BMS */
+
 static const struct power_supply_desc fg_psy_desc = {
 	.name = "bms",
 	.type = POWER_SUPPLY_TYPE_BMS,
@@ -5324,10 +5450,16 @@ static int fg_gen4_mem_attn_irq_en_cb(struct votable *votable, void *data,
 static int fg_alg_init(struct fg_gen4_chip *chip)
 {
 	struct fg_dev *fg = &chip->fg;
+	struct device_node *node = fg->dev->of_node;
 	struct cycle_counter *counter;
 	struct cap_learning *cl;
 	struct ttf *ttf;
 	int rc;
+
+	chip->dt.fg_cycle_disable = of_property_read_bool(node,
+						"google,fg-cycle-disable");
+	if (chip->dt.fg_cycle_disable)
+		goto skip_counter;
 
 	counter = devm_kzalloc(fg->dev, sizeof(*counter), GFP_KERNEL);
 	if (!counter)
@@ -5348,6 +5480,7 @@ static int fg_alg_init(struct fg_gen4_chip *chip)
 
 	chip->counter = counter;
 
+skip_counter:
 	cl = devm_kzalloc(fg->dev, sizeof(*cl), GFP_KERNEL);
 	if (!cl)
 		return -ENOMEM;
@@ -6779,6 +6912,14 @@ static int fg_gen4_probe(struct platform_device *pdev)
 	vote(chip->mem_attn_irq_en_votable, MEM_ATTN_IRQ_VOTER, false, 0);
 
 	fg_debugfs_create(fg);
+
+#if IS_ENABLED(CONFIG_GOOGLE_BMS)
+	rc = gbms_storage_register(&fg_storage_dsc, "fg", chip);
+	if (rc < 0) {
+		pr_err("Failed in fg_storage_register rc=%d\n", rc);
+		goto exit;
+	}
+#endif
 
 	rc = sysfs_create_groups(&fg->dev->kobj, fg_groups);
 	if (rc < 0) {

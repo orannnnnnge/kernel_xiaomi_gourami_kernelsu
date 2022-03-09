@@ -42,7 +42,6 @@ struct ds28e16_data {
 	struct device *dev;
 
 	int version;
-	int cycle_count;
 	int batt_verified;
 #ifdef	CONFIG_FACTORY_BUILD
 	bool factory_enable;
@@ -965,7 +964,6 @@ static enum power_supply_property verify_props[] = {
 	POWER_SUPPLY_PROP_PAGE0_DATA,
 	POWER_SUPPLY_PROP_PAGE1_DATA,
 	POWER_SUPPLY_PROP_VERIFY_MODEL_NAME,
-	POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT,
 	POWER_SUPPLY_PROP_AUTHENTIC,
 };
 
@@ -973,7 +971,6 @@ static int verify_get_property(struct power_supply *psy, enum power_supply_prope
 					union power_supply_propval *val)
 {
 	struct ds28e16_data *data = power_supply_get_drvdata(psy);
-	unsigned char pagedata[16] = {0x00};
 	unsigned char buf[50];
 	int ret;
 #ifdef	CONFIG_FACTORY_BUILD
@@ -1048,14 +1045,6 @@ static int verify_get_property(struct power_supply *psy, enum power_supply_prope
 		if (ret != DS_TRUE)
 			return -EAGAIN;
 		break;
-	case POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT:
-		ret = ds28el16_get_page_data_retry(DC_PAGE, pagedata);
-		if (ret == DS_TRUE) {
-			data->cycle_count = (pagedata[2] << 16) + (pagedata[1] << 8)
-						+ pagedata[0];
-			val->intval = DC_INIT_VALUE - data->cycle_count;
-		}
-		break;
 	case POWER_SUPPLY_PROP_AUTHENTIC:
 		val->intval = data->batt_verified;
 		break;
@@ -1103,9 +1092,6 @@ static int verify_set_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_AUTH_BDCONST:
 		auth_BDCONST   = val->intval;
 		break;
-	case POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT:
-		DS28E16_cmd_decrementCounter();
-		break;
 	case POWER_SUPPLY_PROP_AUTHENTIC:
 		if (val->intval == 1) {
 			authen_result = ds28el16_do_authentication(data);
@@ -1133,7 +1119,6 @@ static int verify_prop_is_writeable(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CHALLENGE:
 	case POWER_SUPPLY_PROP_AUTH_ANON:
 	case POWER_SUPPLY_PROP_AUTH_BDCONST:
-	case POWER_SUPPLY_PROP_MAXIM_BATT_CYCLE_COUNT:
 		ret = 1;
 		break;
 	default:

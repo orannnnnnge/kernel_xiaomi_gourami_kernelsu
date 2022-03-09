@@ -2798,6 +2798,37 @@ static inline unsigned int skb_frag_off(const skb_frag_t *frag)
 }
 
 /**
+ * skb_frag_off_add() - Increments the offset of a skb fragment by @delta
+ * @frag: skb fragment
+ * @delta: value to add
+ */
+static inline void skb_frag_off_add(skb_frag_t *frag, int delta)
+{
+	frag->page_offset += delta;
+}
+
+/**
+ * skb_frag_off_set() - Sets the offset of a skb fragment
+ * @frag: skb fragment
+ * @offset: offset of fragment
+ */
+static inline void skb_frag_off_set(skb_frag_t *frag, unsigned int offset)
+{
+	frag->page_offset = offset;
+}
+
+/**
+ * skb_frag_off_copy() - Sets the offset of a skb fragment from another fragment
+ * @fragto: skb fragment where offset is set
+ * @fragfrom: skb fragment offset is copied from
+ */
+static inline void skb_frag_off_copy(skb_frag_t *fragto,
+				     const skb_frag_t *fragfrom)
+{
+	fragto->page_offset = fragfrom->page_offset;
+}
+
+/**
  * skb_frag_page - retrieve the page referred to by a paged fragment
  * @frag: the paged fragment
  *
@@ -2863,7 +2894,7 @@ static inline void skb_frag_unref(struct sk_buff *skb, int f)
  */
 static inline void *skb_frag_address(const skb_frag_t *frag)
 {
-	return page_address(skb_frag_page(frag)) + frag->page_offset;
+	return page_address(skb_frag_page(frag)) + skb_frag_off(frag);
 }
 
 /**
@@ -2879,7 +2910,18 @@ static inline void *skb_frag_address_safe(const skb_frag_t *frag)
 	if (unlikely(!ptr))
 		return NULL;
 
-	return ptr + frag->page_offset;
+	return ptr + skb_frag_off(frag);
+}
+
+/**
+ * skb_frag_page_copy() - sets the page in a fragment from another fragment
+ * @fragto: skb fragment where page is set
+ * @fragfrom: skb fragment page is copied from
+ */
+static inline void skb_frag_page_copy(skb_frag_t *fragto,
+				      const skb_frag_t *fragfrom)
+{
+	fragto->page_offset = fragfrom->page_offset;
 }
 
 /**
@@ -2927,7 +2969,7 @@ static inline dma_addr_t skb_frag_dma_map(struct device *dev,
 					  enum dma_data_direction dir)
 {
 	return dma_map_page(dev, skb_frag_page(frag),
-			    frag->page_offset + offset, size, dir);
+			    skb_frag_off(frag) + offset, size, dir);
 }
 
 static inline struct sk_buff *pskb_copy(struct sk_buff *skb,
@@ -3098,7 +3140,7 @@ static inline bool skb_can_coalesce(struct sk_buff *skb, int i,
 		const struct skb_frag_struct *frag = &skb_shinfo(skb)->frags[i - 1];
 
 		return page == skb_frag_page(frag) &&
-		       off == frag->page_offset + skb_frag_size(frag);
+		       off == skb_frag_off(frag) + skb_frag_size(frag);
 	}
 	return false;
 }

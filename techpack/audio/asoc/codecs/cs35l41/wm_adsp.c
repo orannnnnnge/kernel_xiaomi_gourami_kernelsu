@@ -691,6 +691,8 @@ static const char *wm_adsp_mem_region_name(unsigned int type)
 	}
 }
 
+static int wm_halo_apply_calibration(struct snd_soc_dapm_widget *w);
+
 #ifdef CONFIG_DEBUG_FS
 static void wm_adsp_debugfs_save_wmfwname(struct wm_adsp *dsp, const char *s)
 {
@@ -3580,6 +3582,8 @@ int wm_halo_event(struct snd_soc_dapm_widget *w,
 		if (ret != 0)
 			goto err;
 
+		wm_halo_apply_calibration(w);
+
 		if (dsp->ops->lock_memory) {
 			ret = dsp->ops->lock_memory(dsp, dsp->lock_regions);
 			if (ret != 0) {
@@ -3686,6 +3690,114 @@ static void wm_halo_stop_core(struct wm_adsp *dsp)
 	/* reset halo core with CORE_SOFT_RESET */
 	regmap_update_bits(dsp->regmap, dsp->base + HALO_CORE_SOFT_RESET,
 			   HALO_CORE_SOFT_RESET_MASK, 1);
+}
+
+static int wm_coeff_k_put(struct snd_kcontrol *kctl,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	struct soc_bytes_ext *bytes_ext =
+		(struct soc_bytes_ext *)kctl->private_value;
+	struct wm_coeff_ctl *ctl = bytes_ext_to_ctl(bytes_ext);
+	char *p = ucontrol->value.bytes.data;
+	int ret = 0;
+
+	if (ctl->flags & WMFW_CTL_FLAG_VOLATILE) {
+		ret = 0;
+	} else
+		memcpy(ctl->cache, p, ctl->len);
+
+	ctl->set = 1;
+	ret = wm_coeff_write_control(ctl, p, ctl->len);
+
+	return ret;
+}
+
+static int wm_coeff_k_get(struct snd_kcontrol *kctl,
+			struct snd_ctl_elem_value *ucontrol)
+{
+	struct soc_bytes_ext *bytes_ext =
+		(struct soc_bytes_ext *)kctl->private_value;
+	struct wm_coeff_ctl *ctl = bytes_ext_to_ctl(bytes_ext);
+	char *p = ucontrol->value.bytes.data;
+	int ret = 0;
+
+	if (ctl->flags & WMFW_CTL_FLAG_VOLATILE) {
+		ret = wm_coeff_read_control(ctl, p, ctl->len);
+	} else {
+		ret = wm_coeff_read_control(ctl, ctl->cache, ctl->len);
+		memcpy(p, ctl->cache, ctl->len);
+	}
+
+	return ret;
+}
+
+static int wm_adsp_k_ctl_put(struct wm_adsp *dsp, const char *name, int value)
+{
+	struct snd_kcontrol *kctl = NULL;
+	struct snd_ctl_elem_value ucontrol;
+	struct snd_soc_card *card = dsp->component->card;
+
+	kctl = snd_soc_card_get_kcontrol(card, name);
+	if (kctl == NULL) {
+		adsp_warn(dsp, "%s: %s isn't found\n", __func__, name);
+		return -1;
+	}
+
+	adsp_dbg(dsp, "%s: %s:0x%x\n", __func__, kctl->id.name, value);
+	value = cpu_to_be32(value);
+	memcpy((char *)ucontrol.value.bytes.data, (char *)&value, sizeof(value));
+	wm_coeff_k_put(kctl, &ucontrol);
+
+	return 0;
+}
+
+static int wm_adsp_k_ctl_get(struct wm_adsp *dsp, const char *name)
+{
+	struct snd_kcontrol *kctl = NULL;
+	struct snd_ctl_elem_value ucontrol;
+	struct snd_soc_card *card = dsp->component->card;
+
+	int value = 0;
+
+	kctl = snd_soc_card_get_kcontrol(card, name);
+	if (kctl == NULL) {
+		adsp_warn(dsp, "%s: %s isn't found\n", __func__, name);
+		return -1;
+	}
+
+	wm_coeff_k_get(kctl, &ucontrol);
+	memcpy((char *)&value, (char *)ucontrol.value.bytes.data, sizeof(value));
+	value = be32_to_cpu(value);
+
+	adsp_dbg(dsp, "%s: %s:0x%x\n", __func__, kctl->id.name, value);
+
+	return 0;
+}
+
+static int wm_halo_apply_calibration(struct snd_soc_dapm_widget *w)
+{
+	struct snd_soc_component *component = snd_soc_dapm_to_component(w->dapm);
+	struct wm_adsp *dsps = snd_soc_component_get_drvdata(component);
+	struct wm_adsp *dsp = &dsps[w->shift];
+
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_R", 9719);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_STATUS", 1);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_CHECKSUM", 9720);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_AMBIENT", 25);
+	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_R");
+	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_STATUS");
+	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_CHECKSUM");
+	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_AMBIENT");
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_R", 10063);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_STATUS", 1);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_CHECKSUM", 10064);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_AMBIENT", 25);
+	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_R");
+	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_STATUS");
+	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_CHECKSUM");
+	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_AMBIENT");
+
+	return 0;
 }
 
 int wm_adsp2_component_probe(struct wm_adsp *dsp, struct snd_soc_component *component)

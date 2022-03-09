@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2013-2014, 2016-2019 The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2014, 2016-2022 The Linux Foundation. All rights reserved.
  *
  * RMNET Data configuration engine
  *
- */
+*/
+
 
 #include <linux/skbuff.h>
 #include <net/gro_cells.h>
@@ -13,6 +14,19 @@
 
 #define RMNET_MAX_LOGICAL_EP 255
 #define RMNET_MAX_VEID 4
+
+#define RMNET_SHS_STMP_ALL BIT(0)
+#define RMNET_SHS_NO_PSH BIT(1)
+#define RMNET_SHS_NO_DLMKR BIT(2)
+
+struct rmnet_shs_clnt_s {
+	u16 config;
+	u16 map_mask;
+	u16 max_pkts;
+	union {
+		struct rmnet_port *port;
+	} info;
+};
 
 struct rmnet_endpoint {
 	u8 mux_id;
@@ -53,6 +67,7 @@ struct rmnet_agg_page {
 	struct page *page;
 };
 
+
 /* One instance of this structure is instantiated for each real_dev associated
  * with rmnet.
  */
@@ -73,8 +88,8 @@ struct rmnet_port {
 	struct sk_buff *agg_skb;
 	int agg_state;
 	u8 agg_count;
-	struct timespec agg_time;
-	struct timespec agg_last;
+	struct timespec64 agg_time;
+	struct timespec64 agg_last;
 	struct hrtimer hrtimer;
 	struct work_struct agg_wq;
 	u8 agg_size_order;
@@ -87,6 +102,9 @@ struct rmnet_port {
 	struct list_head dl_list;
 	struct rmnet_port_priv_stats stats;
 	int dl_marker_flush;
+	/* Port Config for shs */
+	struct rmnet_shs_clnt_s shs_cfg;
+	struct rmnet_shs_clnt_s phy_shs_cfg;
 
 	/* Descriptor pool */
 	spinlock_t desc_pool_lock;

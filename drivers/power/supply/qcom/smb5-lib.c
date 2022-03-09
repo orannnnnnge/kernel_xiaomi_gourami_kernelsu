@@ -4702,9 +4702,6 @@ static int smblib_handle_usb_current(struct smb_charger *chg,
 		return rc;
 	}
 
-	if ((usb_current > 0 && usb_current < USBIN_500MA) || (usb_current == USBIN_900MA))
-    		usb_current = USBIN_500MA;
-
 	if (chg->real_charger_type == POWER_SUPPLY_TYPE_USB_FLOAT) {
 		if (usb_current == -ETIMEDOUT) {
 			if ((chg->float_cfg & FLOAT_OPTIONS_MASK)
@@ -4768,19 +4765,42 @@ static int smblib_handle_usb_current(struct smb_charger *chg,
 		if ((usb_current < SDP_CURRENT_UA) && is_flash_active(chg))
 			usb_current = SDP_CURRENT_UA;
 
-		rc = vote(chg->usb_icl_votable, USB_PSY_VOTER, true,
-							usb_current);
-		if (rc < 0) {
-			pr_err("Couldn't vote ICL USB_PSY_VOTER rc=%d\n", rc);
-			return rc;
-		}
+		typec_mode = smblib_get_prop_typec_mode(chg);
+		if (typec_rp_med_high(chg, typec_mode)
+			&& usb_current > USBIN_25MA) {
+			rp_ua = get_rp_based_dcp_current(chg, typec_mode);
+			rc = vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, true,
+								rp_ua);
+			if (rc < 0) {
+				pr_err("Couldn't vote ICL SW_ICL_MAX_VOTER rc=%d\n",
+					rc);
+				return rc;
+			}
 
-		rc = vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, false, 0);
-		if (rc < 0) {
-			pr_err("Couldn't remove SW_ICL_MAX vote rc=%d\n", rc);
-			return rc;
-		}
+			rc = vote(chg->usb_icl_votable, USB_PSY_VOTER, false,
+								0);
+			if (rc < 0) {
+				pr_err("Couldn't remove USB_PSY_VOTER vote rc=%d\n",
+					rc);
+				return rc;
+			}
+		} else {
+			rc = vote(chg->usb_icl_votable, USB_PSY_VOTER, true,
+								usb_current);
+			if (rc < 0) {
+				pr_err("Couldn't vote ICL USB_PSY_VOTER rc=%d\n",
+					rc);
+				return rc;
+			}
 
+			rc = vote(chg->usb_icl_votable, SW_ICL_MAX_VOTER, false,
+								0);
+			if (rc < 0) {
+				pr_err("Couldn't remove SW_ICL_MAX vote rc=%d\n",
+					rc);
+				return rc;
+			}
+		}
 	}
 
 	return 0;

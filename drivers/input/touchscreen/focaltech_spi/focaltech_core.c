@@ -50,10 +50,10 @@
 * Private constant and macro definitions using #define
 *****************************************************************************/
 #define FTS_DRIVER_NAME                     "fts_ts"
-#define INTERVAL_READ_REG                   200  /* unit:ms */
+#define INTERVAL_READ_REG                   50  /* unit:ms */
 #define TIMEOUT_READ_REG                    1000 /* unit:ms */
 #if FTS_POWER_SOURCE_CUST_EN
-#define FTS_VTG_MIN_UV                      3300000
+#define FTS_VTG_MIN_UV                      3000000
 #define FTS_VTG_MAX_UV                      3300000
 #define FTS_VTG_MAX_UA                      250000
 #define FTS_I2C_VTG_MIN_UV                  1800000
@@ -700,16 +700,14 @@ static int fts_read_parse_touchdata(struct fts_ts_data *data)
 		}
 
 		data->touch_point++;
-		events[i].x = ((buf[FTS_TOUCH_X_H_POS + base] & 0x0F) << 11) +
-					  ((buf[FTS_TOUCH_X_L_POS + base] & 0xFF) << 3) +
-					  ((buf[FTS_TOUCH_PRE_POS + base] & 0xE0) >> 5);
-		events[i].y = ((buf[FTS_TOUCH_Y_H_POS + base] & 0x0F) << 11) +
-					  ((buf[FTS_TOUCH_Y_L_POS + base] & 0xFF) << 3) +
-					  ((buf[FTS_TOUCH_PRE_POS + base] & 0x1C) >> 2);
+		events[i].x = ((buf[FTS_TOUCH_X_H_POS + base] & 0x0F) << 8) +
+			      (buf[FTS_TOUCH_X_L_POS + base] & 0xFF);
+		events[i].y = ((buf[FTS_TOUCH_Y_H_POS + base] & 0x0F) << 8) +
+			      (buf[FTS_TOUCH_Y_L_POS + base] & 0xFF);
 		events[i].flag = buf[FTS_TOUCH_EVENT_POS + base] >> 6;
 		events[i].id = buf[FTS_TOUCH_ID_POS + base] >> 4;
 		events[i].area = buf[FTS_TOUCH_AREA_POS + base] >> 4;
-		events[i].p =  buf[FTS_TOUCH_PRE_POS + base] & 0x03;
+		events[i].p = buf[FTS_TOUCH_PRE_POS + base];
 
 		if (EVENT_DOWN(events[i].flag) && (data->point_num == 0)) {
 			FTS_INFO("abnormal touch data from fw");
@@ -894,8 +892,8 @@ static int fts_input_init(struct fts_ts_data *ts_data)
 #else
 	input_set_abs_params(input_dev, ABS_MT_TRACKING_ID, 0, 0x0F, 0, 0);
 #endif
-	input_set_abs_params(input_dev, ABS_MT_POSITION_X, pdata->x_min, pdata->x_max - 1, 0, 0);
-	input_set_abs_params(input_dev, ABS_MT_POSITION_Y, pdata->y_min, pdata->y_max - 1, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_POSITION_X, pdata->x_min, pdata->x_max, 0, 0);
+	input_set_abs_params(input_dev, ABS_MT_POSITION_Y, pdata->y_min, pdata->y_max, 0, 0);
 #if FTS_REPORT_PRESSURE_EN
 	input_set_abs_params(input_dev, ABS_MT_PRESSURE, 0, 0xFF, 0, 0);
 #endif
@@ -1262,7 +1260,7 @@ err_irq_gpio_req:
 }
 
 static int fts_get_dt_coords(struct device *dev, char *name,
-							 struct fts_ts_platform_data *pdata)
+			     struct fts_ts_platform_data *pdata)
 {
 	int ret = 0;
 	u32 coords[FTS_COORDS_ARR_SIZE] = { 0 };
@@ -1298,7 +1296,7 @@ static int fts_get_dt_coords(struct device *dev, char *name,
 	}
 
 	FTS_INFO("display x(%d %d) y(%d %d)", pdata->x_min, pdata->x_max,
-			 pdata->y_min, pdata->y_max);
+		 pdata->y_min, pdata->y_max);
 	return 0;
 }
 
@@ -1708,6 +1706,7 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
 		FTS_ERROR("create sysfs node fail");
 	}
 
+#if (IS_ENABLED(CONFIG_TOUCHSCREEN_FTS_DEBUG))
 	ts_data->tpdbg_dentry = debugfs_create_dir("tp_debug", NULL);
 	if (IS_ERR_OR_NULL(ts_data->tpdbg_dentry)) {
 		FTS_ERROR("create tp_debug dir fail");
@@ -1716,6 +1715,7 @@ static int fts_ts_probe_entry(struct fts_ts_data *ts_data)
 				ts_data->tpdbg_dentry, ts_data, &tpdbg_operations))) {
 		FTS_ERROR("create switch_state fail");
 	}
+#endif
 
 #if IS_ENABLED(CONFIG_TOUCHSCREEN_FOCALTECH_POINT_REPORT_CHECK)
 	ret = fts_point_report_check_init(ts_data);
@@ -1826,7 +1826,9 @@ static int fts_ts_remove_entry(struct fts_ts_data *ts_data)
 	fts_point_report_check_exit(ts_data);
 #endif
 
+#if (IS_ENABLED(CONFIG_TOUCHSCREEN_FTS_DEBUG))
 	debugfs_remove_recursive(ts_data->tpdbg_dentry);
+#endif
 	fts_remove_proc(ts_data);
 	fts_remove_sysfs(ts_data);
 	fts_ex_mode_exit(ts_data);
@@ -1969,8 +1971,6 @@ static int fts_ts_resume(struct device *dev)
 		FTS_INFO("palm sensor OFF, switch to ON");
 		fts_palm_sensor_cmd(1);
 	}
-	/* Update Touchmode Data */
-	fts_update_touchmode_data(ts_data);
 #endif
 
 	if (ts_data->gesture_mode && !ts_data->poweroff_on_sleep) {
@@ -1978,6 +1978,11 @@ static int fts_ts_resume(struct device *dev)
 	} else {
 		fts_irq_enable();
 	}
+
+#if IS_ENABLED(CONFIG_TOUCHSCREEN_XIAOMI_TOUCHFEATURE)
+	/* Update Touchmode Data */
+	fts_update_touchmode_data(ts_data);
+#endif
 
 	ts_data->poweroff_on_sleep = false;
 	ts_data->suspended = false;

@@ -1499,7 +1499,7 @@ static void smap_release_sock(struct smap_psock *psock, struct sock *sock)
 		write_unlock_bh(&sock->sk_callback_lock);
 		clear_bit(SMAP_TX_RUNNING, &psock->state);
 		rcu_assign_sk_user_data(sock, NULL);
-		call_rcu_sched(&psock->rcu, smap_destroy_psock);
+		call_rcu(&psock->rcu, smap_destroy_psock);
 	}
 }
 

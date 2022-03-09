@@ -167,17 +167,17 @@ unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
  */
 unsigned int capacity_margin				= 1280;
 unsigned int sched_capacity_margin_up[CPU_NR] = {
-	1279, 1279, 1279, 1279, 1280, 1280, 1280, 1282
+	[0 ... CPU_NR - 1] = 1280
 }; /* ~20% margin */
 unsigned int sched_capacity_margin_down[CPU_NR] = {
-	1555, 1555, 1555, 1555, 1400, 1400, 1400, 1403
-}; /* 22% margin for little, 9% margin for big and big+ */
+	[0 ... CPU_NR - 1] = 1280
+}; /* ~20% margin */
 unsigned int sched_capacity_margin_up_boosted[CPU_NR] = {
-    5120, 5120, 5120, 5120, 5116, 5116, 5116, 5113
-}; /* 80% margin for little, big and big+ */
+	1280, 1280, 1280, 1280, 1280, 1280, 1280, 1078
+}; /* ~20% margin for small and big, 5% for big+ */
 unsigned int sched_capacity_margin_down_boosted[CPU_NR] = {
-    6223, 6223, 6223, 6223, 5598, 5598, 5598, 5595
-}; /* 20% margin for little, 9% margin for big and big+ */
+	1280, 1280, 1280, 1280, 1575, 1575, 1575, 1280
+}; /* not used for small cores, ~35% margin for big, ~20% margin for big+ */
 
 #ifdef CONFIG_SCHED_WALT
 /* 1ms default for 20ms window size scaled to 1024 */
@@ -2832,61 +2832,6 @@ static inline void update_scan_period(struct task_struct *p, int new_cpu)
 
 #endif /* CONFIG_NUMA_BALANCING */
 
-DEFINE_PER_CPU(unsigned long *, prioritized_task_mask);
-DEFINE_PER_CPU(int, prioritized_task_nr);
-
-static bool bitmap_testbit(unsigned long *map, unsigned long bit)
-{
-	if (*(map + BIT_WORD(bit)) & BIT_MASK(bit))
-		return true;
-
-	return false;
-}
-
-static void inc_prioritized_task_count(struct rq *rq, struct task_struct *p)
-{
-	bool bitset;
-
-	if (is_min_capacity_cpu(cpu_of(rq)))
-		return;
-
-	if (unlikely(p->pid > PID_MAX_DEFAULT))
-		return;
-
-	bitset = bitmap_testbit(per_cpu(prioritized_task_mask, cpu_of(rq)),
-				p->pid);
-
-	if (schedtune_prefer_high_cap(p) && p->prio <= DEFAULT_PRIO) {
-		if (likely(!bitset)) {
-			__bitmap_set(per_cpu(prioritized_task_mask, cpu_of(rq)),
-				     p->pid, 1);
-			per_cpu(prioritized_task_nr, cpu_of(rq))++;
-		}
-	} else if (unlikely(bitset)) {
-		__bitmap_clear(per_cpu(prioritized_task_mask, cpu_of(rq)),
-			       p->pid, 1);
-		if (per_cpu(prioritized_task_nr, cpu_of(rq)) > 0)
-			per_cpu(prioritized_task_nr, cpu_of(rq))--;
-	}
-}
-
-static void dec_prioritized_task_count(struct rq *rq, struct task_struct *p)
-{
-	if (is_min_capacity_cpu(cpu_of(rq)))
-		return;
-
-	if (unlikely(p->pid > PID_MAX_DEFAULT))
-		return;
-
-	if (bitmap_testbit(per_cpu(prioritized_task_mask, cpu_of(rq)),
-			   p->pid)) {
-		__bitmap_clear(per_cpu(prioritized_task_mask, cpu_of(rq)),
-			       p->pid, 1);
-		if (per_cpu(prioritized_task_nr, cpu_of(rq)) > 0)
-			per_cpu(prioritized_task_nr, cpu_of(rq))--;
-	}
-}
-
 static void
 account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 {
@@ -2902,9 +2847,6 @@ account_entity_enqueue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	}
 #endif
 	cfs_rq->nr_running++;
-	if (likely(entity_is_task(se))) {
-		inc_prioritized_task_count(rq_of(cfs_rq), task_of(se));
-	}
 }
 
 static void
@@ -2920,9 +2862,6 @@ account_entity_dequeue(struct cfs_rq *cfs_rq, struct sched_entity *se)
 	}
 #endif
 	cfs_rq->nr_running--;
-	if (likely(entity_is_task(se))) {
-		dec_prioritized_task_count(rq_of(cfs_rq), task_of(se));
-	}
 }
 
 /*
@@ -4001,7 +3940,7 @@ static inline bool cpu_is_in_target_set(struct task_struct *p, int cpu)
 	struct root_domain *rd = cpu_rq(cpu)->rd;
 	int first_cpu, next_usable_cpu;
 #ifdef CONFIG_SCHED_TUNE
-	if (schedtune_prefer_high_cap(p) && p->prio <= DEFAULT_PRIO) {
+	if (schedtune_prefer_high_cap(p)) {
 #else
 	if (uclamp_boosted(p)) {
 #endif
@@ -6271,7 +6210,7 @@ static int wake_affine(struct sched_domain *sd, struct task_struct *p,
 struct reciprocal_value schedtune_spc_rdiv;
 
 static long
-schedtune_margin(unsigned long signal, long boost, long capacity)
+schedtune_margin(unsigned long signal, long boost)
 {
 	long long margin = 0;
 
@@ -6280,14 +6219,12 @@ schedtune_margin(unsigned long signal, long boost, long capacity)
 	 *
 	 * The Boost (B) value is used to compute a Margin (M) which is
 	 * proportional to the complement of the original Signal (S):
-	 *   M = B * (capacity - S)
+	 *   M = B * (SCHED_CAPACITY_SCALE - S)
 	 * The obtained M could be used by the caller to "boost" S.
 	 */
 	if (boost >= 0) {
-		if (capacity > signal) {
-			margin  = capacity - signal;
-			margin *= boost;
-		}
+		margin  = SCHED_CAPACITY_SCALE - signal;
+		margin *= boost;
 	} else
 		margin = -signal * boost;
 
@@ -6307,7 +6244,7 @@ schedtune_cpu_margin_with(unsigned long util, int cpu, struct task_struct *p)
 	if (boost == 0)
 		margin = 0;
 	else
-		margin = schedtune_margin(util, boost, capacity_orig_of(cpu));
+		margin = schedtune_margin(util, boost);
 
 	trace_sched_boost_cpu(cpu, util, margin);
 
@@ -6324,7 +6261,7 @@ long schedtune_task_margin(struct task_struct *task)
 		return 0;
 
 	util = task_util_est(task);
-	margin = schedtune_margin(util, boost, SCHED_CAPACITY_SCALE);
+	margin = schedtune_margin(util, boost);
 
 	return margin;
 }
@@ -7134,6 +7071,10 @@ static int get_start_cpu(struct task_struct *p, bool sync_boost)
 			rd->max_cap_orig_cpu : rd->mid_cap_orig_cpu;
 	}
 
+	if (start_cpu == rd->mid_cap_orig_cpu &&
+			!task_demand_fits(p, start_cpu))
+		start_cpu = rd->max_cap_orig_cpu;
+
 	return start_cpu;
 }
 
@@ -7163,8 +7104,6 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 	struct sched_group *sg;
 	int best_active_cpu = -1;
 	int best_idle_cpu = -1;
-	bool idle_fit_cpu_found = false;
-	int best_prioritized_cpu = -1;
 	int target_cpu = -1;
 	int backup_cpu = -1;
 	int i, start_cpu;
@@ -7175,7 +7114,6 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 	int isolated_candidate = -1;
 	int mid_cap_orig_cpu = cpu_rq(smp_processor_id())->rd->mid_cap_orig_cpu;
 	struct task_struct *curr_tsk;
-	bool prioritized_task = prefer_high_cap && p->prio <= DEFAULT_PRIO;
 
 	/*
 	 * In most cases, target_capacity tracks capacity_orig of the most
@@ -7222,7 +7160,6 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 			unsigned long wake_util, new_util, new_util_cuml;
 			long spare_cap;
 			int idle_idx = INT_MAX;
-			bool best_prioritized_candidate;
 
 			trace_sched_cpu_util(i);
 
@@ -7284,23 +7221,10 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 			 * capacity margin.
 			 */
 			new_util = max(min_util, new_util);
-			best_prioritized_candidate =
-				prioritized_task && !is_min_capacity_cpu(i) &&
-				per_cpu(prioritized_task_nr, i) == 0;
-
-			if (!(prefer_idle && idle_cpu(i)) &&
-			    !best_prioritized_candidate &&
-			    new_util > capacity_orig)
-				continue;
-
-			/*
-			 * If start cpu is mid core, we don't want to loop
-			 * back to little cores, unless the task prefers
-			 * idle cpu and could not find one in mid/max core.
-			 */
-			if (!(prefer_idle && idle_fit_cpu_found == false) &&
-			    is_min_capacity_cpu(i) &&
-			    !task_fits_capacity(p, capacity_orig, i))
+			if ((!(prefer_idle && idle_cpu(i)) &&
+			    new_util > capacity_orig) ||
+			     (is_min_capacity_cpu(i) &&
+			      !task_fits_capacity(p, capacity_orig, i)))
 				continue;
 
 			/*
@@ -7388,28 +7312,12 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 					target_capacity = capacity_orig;
 					shallowest_idle_cstate = idle_idx;
 					best_idle_util = new_util;
-
-					if (is_min_capacity_cpu(start_cpu) ==
-					    is_min_capacity_cpu(i))
-						idle_fit_cpu_found = true;
-
 					best_idle_cpu = i;
 					continue;
 				}
 				if (best_idle_cpu != -1)
 					continue;
 
-				if (best_prioritized_candidate) {
-					best_prioritized_cpu = i;
-					continue;
-				}
-
-				/*
-				 * Skip searching for active CPU for tasks have
-				 * high priority & prefer_high_cap.
-				 */
-				if (prioritized_task)
-					continue;
 				/*
 				 * Case A.2: Target ACTIVE CPU
 				 * Favor CPUs with max spare capacity.
@@ -7568,11 +7476,10 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 		 * accommodated in the higher capacity CPUs.
 		 */
 		if ((prefer_idle && best_idle_cpu != -1) ||
-		    (prioritized_task && best_prioritized_cpu != -1) ||
-		    (prefer_high_cap && p->prio > DEFAULT_PRIO &&
-		     (target_cpu != -1 ||
+		    (prefer_high_cap &&
+		     (best_idle_cpu != -1 || target_cpu != -1 ||
 		      (fbt_env->strict_max && most_spare_cap_cpu != -1)))) {
-			if (prioritized_task) {
+			if (prefer_high_cap && p->prio <= DEFAULT_PRIO) {
 				/*
 				 * For prefer_high_cap task, stop searching when
 				 * an idle cpu is found in mid cluster.
@@ -7591,11 +7498,6 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 
 	if (prefer_idle && (best_idle_cpu != -1)) {
 		target_cpu = best_idle_cpu;
-		goto target;
-	}
-
-	if (prioritized_task && (best_prioritized_cpu != -1)) {
-		target_cpu = best_prioritized_cpu;
 		goto target;
 	}
 
@@ -7644,10 +7546,8 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 		: best_idle_cpu;
 
 	if (target_cpu == -1 && most_spare_cap_cpu != -1 &&
-	    /* ensure we use active cpu for active migration */
-	    !(p->state == TASK_RUNNING && !idle_cpu(most_spare_cap_cpu)) &&
-		/* do not pick an overutilized most_spare_cap_cpu */
-		!cpu_overutilized(most_spare_cap_cpu))
+		/* ensure we use active cpu for active migration */
+		!(p->state == TASK_RUNNING && !idle_cpu(most_spare_cap_cpu)))
 		target_cpu = most_spare_cap_cpu;
 
 	if (target_cpu == -1 && isolated_candidate != -1 &&
@@ -8247,7 +8147,7 @@ sd_loop:
 	rcu_read_lock();
 	for_each_domain(cpu, tmp) {
 		if (!(tmp->flags & SD_LOAD_BALANCE))
-			break;
+			continue;
 
 		/*
 		 * If both 'cpu' and 'prev_cpu' are part of this domain,
@@ -8991,12 +8891,9 @@ static inline int migrate_degrades_locality(struct task_struct *p,
 static inline bool can_migrate_boosted_task(struct task_struct *p,
 			int src_cpu, int dst_cpu)
 {
-	if ((per_task_boost(p) == TASK_BOOST_STRICT_MAX &&
-	     task_in_related_thread_group(p) &&
-	     (capacity_orig_of(dst_cpu) < capacity_orig_of(src_cpu))) ||
-	    (schedtune_prefer_high_cap(p) && p->prio <= DEFAULT_PRIO &&
-	     !is_min_capacity_cpu(src_cpu) && is_min_capacity_cpu(dst_cpu) &&
-	     per_cpu(prioritized_task_nr, src_cpu <= 1)))
+	if (per_task_boost(p) == TASK_BOOST_STRICT_MAX &&
+		task_in_related_thread_group(p) &&
+		(capacity_orig_of(dst_cpu) < capacity_orig_of(src_cpu)))
 		return false;
 	return true;
 }

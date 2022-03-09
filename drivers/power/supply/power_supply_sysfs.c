@@ -544,7 +544,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(page0_data),
 	POWER_SUPPLY_ATTR(page1_data),
 	POWER_SUPPLY_ATTR(verify_model_name),
-	POWER_SUPPLY_ATTR(maxim_batt_cycle_count),
 #endif
 #ifdef CONFIG_BQ2597X_CHARGE_PUMP
 	/* Bq charge pump properties */

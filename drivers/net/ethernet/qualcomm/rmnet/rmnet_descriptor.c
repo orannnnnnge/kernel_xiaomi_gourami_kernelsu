@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
  *
  * RMNET Packet Descriptor Framework
@@ -48,7 +47,7 @@ rmnet_get_frag_descriptor(struct rmnet_port *port)
 			goto out;
 
 		INIT_LIST_HEAD(&frag_desc->list);
-		INIT_LIST_HEAD(&frag_desc->sub_frags);
+		INIT_LIST_HEAD(&frag_desc->frags);
 		pool->pool_size++;
 	}
 
@@ -62,64 +61,285 @@ void rmnet_recycle_frag_descriptor(struct rmnet_frag_descriptor *frag_desc,
 				   struct rmnet_port *port)
 {
 	struct rmnet_frag_descriptor_pool *pool = port->frag_desc_pool;
-	struct page *page = skb_frag_page(&frag_desc->frag);
+	struct rmnet_fragment *frag, *tmp;
 	unsigned long flags;
 
 	list_del(&frag_desc->list);
-	if (page)
-		put_page(page);
+
+	list_for_each_entry_safe(frag, tmp, &frag_desc->frags, list) {
+		struct page *page = skb_frag_page(&frag->frag);
+
+		if (page)
+			put_page(page);
+
+		list_del(&frag->list);
+		kfree(frag);
+	}
 
 	memset(frag_desc, 0, sizeof(*frag_desc));
 	INIT_LIST_HEAD(&frag_desc->list);
-	INIT_LIST_HEAD(&frag_desc->sub_frags);
+	INIT_LIST_HEAD(&frag_desc->frags);
 	spin_lock_irqsave(&port->desc_pool_lock, flags);
 	list_add_tail(&frag_desc->list, &pool->free_list);
 	spin_unlock_irqrestore(&port->desc_pool_lock, flags);
 }
 EXPORT_SYMBOL(rmnet_recycle_frag_descriptor);
 
-void rmnet_descriptor_add_frag(struct rmnet_port *port, struct list_head *list,
-			       struct page *p, u32 page_offset, u32 len)
+void *rmnet_frag_pull(struct rmnet_frag_descriptor *frag_desc,
+		      struct rmnet_port *port, unsigned int size)
 {
-	struct rmnet_frag_descriptor *frag_desc;
+	struct rmnet_fragment *frag, *tmp;
 
-	frag_desc = rmnet_get_frag_descriptor(port);
-	if (!frag_desc)
-		return;
+	if (size >= frag_desc->len) {
+		pr_info("%s(): Pulling %u bytes from %u byte pkt. Dropping\n",
+			__func__, size, frag_desc->len);
+		rmnet_recycle_frag_descriptor(frag_desc, port);
+		return NULL;
+	}
 
-	rmnet_frag_fill(frag_desc, p, page_offset, len);
-	list_add_tail(&frag_desc->list, list);
+	list_for_each_entry_safe(frag, tmp, &frag_desc->frags, list) {
+		u32 frag_size = skb_frag_size(&frag->frag);
+
+		if (!size)
+			break;
+
+		if (size >= frag_size) {
+			/* Remove the whole frag */
+			struct page *page = skb_frag_page(&frag->frag);
+
+			if (page)
+				put_page(page);
+
+			list_del(&frag->list);
+			size -= frag_size;
+			frag_desc->len -= frag_size;
+			kfree(frag);
+			continue;
+		}
+
+		/* Pull off 'size' bytes */
+		skb_frag_off_add(&frag->frag, size);
+		skb_frag_size_sub(&frag->frag, size);
+		frag_desc->len -= size;
+		break;
+	}
+
+	return rmnet_frag_data_ptr(frag_desc);
 }
-EXPORT_SYMBOL(rmnet_descriptor_add_frag);
+EXPORT_SYMBOL(rmnet_frag_pull);
+
+void *rmnet_frag_trim(struct rmnet_frag_descriptor *frag_desc,
+		      struct rmnet_port *port, unsigned int size)
+{
+	struct rmnet_fragment *frag, *tmp;
+	unsigned int eat;
+
+	if (!size) {
+		pr_info("%s(): Trimming %u byte pkt to 0. Dropping\n",
+			__func__, frag_desc->len);
+		rmnet_recycle_frag_descriptor(frag_desc, port);
+		return NULL;
+	}
+
+	/* Growing bigger doesn't make sense */
+	if (size >= frag_desc->len)
+		goto out;
+
+	/* Compute number of bytes to remove from the end */
+	eat = frag_desc->len - size;
+	list_for_each_entry_safe_reverse(frag, tmp, &frag_desc->frags, list) {
+		u32 frag_size = skb_frag_size(&frag->frag);
+
+		if (!eat)
+			goto out;
+
+		if (eat >= frag_size) {
+			/* Remove the whole frag */
+			struct page *page = skb_frag_page(&frag->frag);
+
+			if (page)
+				put_page(page);
+
+			list_del(&frag->list);
+			eat -= frag_size;
+			frag_desc->len -= frag_size;
+			kfree(frag);
+			continue;
+		}
+
+		/* Chop off 'eat' bytes from the end */
+		skb_frag_size_sub(&frag->frag, eat);
+		frag_desc->len -= eat;
+		goto out;
+	}
+
+out:
+	return rmnet_frag_data_ptr(frag_desc);
+}
+EXPORT_SYMBOL(rmnet_frag_trim);
+
+static int rmnet_frag_copy_data(struct rmnet_frag_descriptor *frag_desc,
+				u32 off, u32 len, void *buf)
+{
+	struct rmnet_fragment *frag;
+	u32 frag_size, copy_len;
+	u32 buf_offset = 0;
+
+	/* Don't make me do something we'd both regret */
+	if (off > frag_desc->len || len > frag_desc->len ||
+	    off + len > frag_desc->len)
+		return -EINVAL;
+
+	/* Copy 'len' bytes into the bufer starting from 'off' */
+	list_for_each_entry(frag, &frag_desc->frags, list) {
+		if (!len)
+			break;
+
+		frag_size = skb_frag_size(&frag->frag);
+		if (off < frag_size) {
+			copy_len = min_t(u32, len, frag_size - off);
+			memcpy(buf + buf_offset,
+			       skb_frag_address(&frag->frag) + off,
+			       copy_len);
+			buf_offset += copy_len;
+			len -= copy_len;
+			off = 0;
+		} else {
+			off -= frag_size;
+		}
+	}
+
+	return 0;
+}
+
+void *rmnet_frag_header_ptr(struct rmnet_frag_descriptor *frag_desc, u32 off,
+			    u32 len, void *buf)
+{
+	struct rmnet_fragment *frag;
+	u8 *start;
+	u32 frag_size, offset;
+
+	/* Don't take a long pointer off a short frag */
+	if (off > frag_desc->len || len > frag_desc->len ||
+	    off + len > frag_desc->len)
+		return NULL;
+
+	/* Find the starting fragment */
+	offset = off;
+	list_for_each_entry(frag, &frag_desc->frags, list) {
+		frag_size = skb_frag_size(&frag->frag);
+		if (off < frag_size) {
+			start = skb_frag_address(&frag->frag) + off;
+			/* If the header is entirely on this frag, just return
+			 * a pointer to it.
+			 */
+			if (off + len <= frag_size)
+				return start;
+
+			/* Otherwise, we need to copy the data into a linear
+			 * buffer.
+			 */
+			break;
+		}
+
+		off -= frag_size;
+	}
+
+	if (rmnet_frag_copy_data(frag_desc, offset, len, buf) < 0)
+		return NULL;
+
+	return buf;
+}
+EXPORT_SYMBOL(rmnet_frag_header_ptr);
+
+int rmnet_frag_descriptor_add_frag(struct rmnet_frag_descriptor *frag_desc,
+				   struct page *p, u32 page_offset, u32 len)
+{
+	struct rmnet_fragment *frag;
+
+	frag = kzalloc(sizeof(*frag), GFP_ATOMIC);
+	if (!frag)
+		return -ENOMEM;
+
+	INIT_LIST_HEAD(&frag->list);
+	get_page(p);
+	__skb_frag_set_page(&frag->frag, p);
+	skb_frag_size_set(&frag->frag, len);
+	skb_frag_off_set(&frag->frag, page_offset);
+	list_add_tail(&frag->list, &frag_desc->frags);
+	frag_desc->len += len;
+	return 0;
+}
+EXPORT_SYMBOL(rmnet_frag_descriptor_add_frag);
+
+int rmnet_frag_descriptor_add_frags_from(struct rmnet_frag_descriptor *to,
+					 struct rmnet_frag_descriptor *from,
+					 u32 off, u32 len)
+{
+	struct rmnet_fragment *frag;
+	int rc;
+
+	/* Sanity check the lengths */
+	if (off > from->len || len > from->len || off + len > from->len)
+		return -EINVAL;
+
+	list_for_each_entry(frag, &from->frags, list) {
+		u32 frag_size;
+
+		if (!len)
+			break;
+
+		frag_size = skb_frag_size(&frag->frag);
+		if (off < frag_size) {
+			struct page *p = skb_frag_page(&frag->frag);
+			u32 page_off = skb_frag_off(&frag->frag);
+			u32 copy_len = min_t(u32, len, frag_size - off);
+
+			rc = rmnet_frag_descriptor_add_frag(to, p,
+							    page_off + off,
+							    copy_len);
+			if (rc < 0)
+				return rc;
+
+			len -= copy_len;
+			off = 0;
+		} else {
+			off -= frag_size;
+		}
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(rmnet_frag_descriptor_add_frags_from);
 
 int rmnet_frag_ipv6_skip_exthdr(struct rmnet_frag_descriptor *frag_desc,
 				int start, u8 *nexthdrp, __be16 *fragp)
 {
-	u32 frag_size = skb_frag_size(&frag_desc->frag);
 	u8 nexthdr = *nexthdrp;
 
 	*fragp = 0;
 
 	while (ipv6_ext_hdr(nexthdr)) {
-		struct ipv6_opt_hdr *hp;
+		struct ipv6_opt_hdr *hp, __hp;
 		int hdrlen;
 
 		if (nexthdr == NEXTHDR_NONE)
 			return -EINVAL;
 
-		if (start >= frag_size)
+		hp = rmnet_frag_header_ptr(frag_desc, (u32)start, sizeof(*hp),
+					   &__hp);
+		if (!hp)
 			return -EINVAL;
 
-		hp = rmnet_frag_data_ptr(frag_desc) + start;
 		if (nexthdr == NEXTHDR_FRAGMENT) {
-			__be16 *fp;
+			u32 off = offsetof(struct frag_hdr, frag_off);
+			__be16 *fp, __fp;
 
-			if (start + offsetof(struct frag_hdr, frag_off) >=
-			    frag_size)
+			fp = rmnet_frag_header_ptr(frag_desc, (u32)start + off,
+						   sizeof(*fp), &__fp);
+			if (!fp)
 				return -EINVAL;
 
-			fp = rmnet_frag_data_ptr(frag_desc) + start +
-			     offsetof(struct frag_hdr, frag_off);
 			*fragp = *fp;
 			if (ntohs(*fragp) & ~0x7)
 				break;
@@ -140,10 +360,10 @@ int rmnet_frag_ipv6_skip_exthdr(struct rmnet_frag_descriptor *frag_desc,
 EXPORT_SYMBOL(rmnet_frag_ipv6_skip_exthdr);
 
 static u8 rmnet_frag_do_flow_control(struct rmnet_map_header *qmap,
+				     struct rmnet_map_control_command *cmd,
 				     struct rmnet_port *port,
 				     int enable)
 {
-	struct rmnet_map_control_command *cmd;
 	struct rmnet_endpoint *ep;
 	struct net_device *vnd;
 	u16 ip_family;
@@ -153,9 +373,6 @@ static u8 rmnet_frag_do_flow_control(struct rmnet_map_header *qmap,
 	int r;
 
 	mux_id = qmap->mux_id;
-	cmd = (struct rmnet_map_control_command *)
-	      ((char *)qmap + sizeof(*qmap));
-
 	if (mux_id >= RMNET_MAX_LOGICAL_EP)
 		return RX_HANDLER_CONSUMED;
 
@@ -205,20 +422,25 @@ static void rmnet_frag_send_ack(struct rmnet_map_header *qmap,
 }
 
 static void
-rmnet_frag_process_flow_start(struct rmnet_map_control_command_header *cmd,
+rmnet_frag_process_flow_start(struct rmnet_frag_descriptor *frag_desc,
+			      struct rmnet_map_control_command_header *cmd,
 			      struct rmnet_port *port,
 			      u16 cmd_len)
 {
-	struct rmnet_map_dl_ind_hdr *dlhdr;
+	struct rmnet_map_dl_ind_hdr *dlhdr, __dlhdr;
+	u32 offset = sizeof(struct rmnet_map_header);
 	u32 data_format;
 	bool is_dl_mark_v2;
 
-	if (cmd_len + sizeof(struct rmnet_map_header) < RMNET_DL_IND_HDR_SIZE)
+	if (cmd_len + offset < RMNET_DL_IND_HDR_SIZE)
 		return;
 
 	data_format = port->data_format;
 	is_dl_mark_v2 = data_format & RMNET_INGRESS_FORMAT_DL_MARKER_V2;
-	dlhdr = (struct rmnet_map_dl_ind_hdr *)((char *)cmd + sizeof(*cmd));
+	dlhdr = rmnet_frag_header_ptr(frag_desc, offset + sizeof(*cmd),
+				      sizeof(*dlhdr), &__dlhdr);
+	if (!dlhdr)
+		return;
 
 	port->stats.dl_hdr_last_ep_id = cmd->source_id;
 	port->stats.dl_hdr_last_qmap_vers = cmd->reserved;
@@ -236,25 +458,28 @@ rmnet_frag_process_flow_start(struct rmnet_map_control_command_header *cmd,
 	 */
 	if (is_dl_mark_v2)
 		rmnet_map_dl_hdr_notify_v2(port, dlhdr, cmd);
-	else
-		rmnet_map_dl_hdr_notify(port, dlhdr);
 }
 
 static void
-rmnet_frag_process_flow_end(struct rmnet_map_control_command_header *cmd,
+rmnet_frag_process_flow_end(struct rmnet_frag_descriptor *frag_desc,
+			    struct rmnet_map_control_command_header *cmd,
 			    struct rmnet_port *port, u16 cmd_len)
 {
-	struct rmnet_map_dl_ind_trl *dltrl;
+	struct rmnet_map_dl_ind_trl *dltrl, __dltrl;
+	u32 offset = sizeof(struct rmnet_map_header);
 	u32 data_format;
 	bool is_dl_mark_v2;
 
 
-	if (cmd_len + sizeof(struct rmnet_map_header) < RMNET_DL_IND_TRL_SIZE)
+	if (cmd_len + offset < RMNET_DL_IND_TRL_SIZE)
 		return;
 
 	data_format = port->data_format;
 	is_dl_mark_v2 = data_format & RMNET_INGRESS_FORMAT_DL_MARKER_V2;
-	dltrl = (struct rmnet_map_dl_ind_trl *)((char *)cmd + sizeof(*cmd));
+	dltrl = rmnet_frag_header_ptr(frag_desc, offset + sizeof(*cmd),
+				      sizeof(*dltrl), &__dltrl);
+	if (!dltrl)
+		return;
 
 	port->stats.dl_trl_last_seq = dltrl->seq_le;
 	port->stats.dl_trl_count++;
@@ -264,30 +489,29 @@ rmnet_frag_process_flow_end(struct rmnet_map_control_command_header *cmd,
 	 */
 	if (is_dl_mark_v2)
 		rmnet_map_dl_trl_notify_v2(port, dltrl, cmd);
-	else
-		rmnet_map_dl_trl_notify(port, dltrl);
 }
 
 /* Process MAP command frame and send N/ACK message as appropriate. Message cmd
  * name is decoded here and appropriate handler is called.
  */
-void rmnet_frag_command(struct rmnet_map_header *qmap, struct rmnet_port *port)
+void rmnet_frag_command(struct rmnet_frag_descriptor *frag_desc,
+			struct rmnet_map_header *qmap, struct rmnet_port *port)
 {
-	struct rmnet_map_control_command *cmd;
-	unsigned char command_name;
+	struct rmnet_map_control_command *cmd, __cmd;
 	unsigned char rc = 0;
 
-	cmd = (struct rmnet_map_control_command *)
-	      ((char *)qmap + sizeof(*qmap));
-	command_name = cmd->command_name;
+	cmd = rmnet_frag_header_ptr(frag_desc, sizeof(*qmap), sizeof(*cmd),
+				    &__cmd);
+	if (!cmd)
+		return;
 
-	switch (command_name) {
+	switch (cmd->command_name) {
 	case RMNET_MAP_COMMAND_FLOW_ENABLE:
-		rc = rmnet_frag_do_flow_control(qmap, port, 1);
+		rc = rmnet_frag_do_flow_control(qmap, cmd, port, 1);
 		break;
 
 	case RMNET_MAP_COMMAND_FLOW_DISABLE:
-		rc = rmnet_frag_do_flow_control(qmap, port, 0);
+		rc = rmnet_frag_do_flow_control(qmap, cmd, port, 0);
 		break;
 
 	default:
@@ -298,23 +522,23 @@ void rmnet_frag_command(struct rmnet_map_header *qmap, struct rmnet_port *port)
 		rmnet_frag_send_ack(qmap, rc, port);
 }
 
-int rmnet_frag_flow_command(struct rmnet_map_header *qmap,
+int rmnet_frag_flow_command(struct rmnet_frag_descriptor *frag_desc,
 			    struct rmnet_port *port, u16 pkt_len)
 {
-	struct rmnet_map_control_command_header *cmd;
-	unsigned char command_name;
+	struct rmnet_map_control_command_header *cmd, __cmd;
 
-	cmd = (struct rmnet_map_control_command_header *)
-	      ((char *)qmap + sizeof(*qmap));
-	command_name = cmd->command_name;
+	cmd = rmnet_frag_header_ptr(frag_desc, sizeof(struct rmnet_map_header),
+				    sizeof(*cmd), &__cmd);
+	if (!cmd)
+		return -1;
 
-	switch (command_name) {
+	switch (cmd->command_name) {
 	case RMNET_MAP_COMMAND_FLOW_START:
-		rmnet_frag_process_flow_start(cmd, port, pkt_len);
+		rmnet_frag_process_flow_start(frag_desc, cmd, port, pkt_len);
 		break;
 
 	case RMNET_MAP_COMMAND_FLOW_END:
-		rmnet_frag_process_flow_end(cmd, port, pkt_len);
+		rmnet_frag_process_flow_end(frag_desc, cmd, port, pkt_len);
 		break;
 
 	default:
@@ -325,55 +549,126 @@ int rmnet_frag_flow_command(struct rmnet_map_header *qmap,
 }
 EXPORT_SYMBOL(rmnet_frag_flow_command);
 
-void rmnet_frag_deaggregate(skb_frag_t *frag, struct rmnet_port *port,
-			    struct list_head *list)
+static int rmnet_frag_deaggregate_one(struct sk_buff *skb,
+				      struct rmnet_port *port,
+				      struct list_head *list,
+				      u32 start_frag)
 {
-	struct rmnet_map_header *maph;
-	u8 *data = skb_frag_address(frag);
-	u32 offset = 0;
-	u32 packet_len;
+	struct skb_shared_info *shinfo = skb_shinfo(skb);
+	struct rmnet_frag_descriptor *frag_desc;
+	struct rmnet_map_header *maph, __maph;
+	skb_frag_t *frag;
+	u32 i;
+	u32 pkt_len;
+	int rc;
 
-	while (offset < skb_frag_size(frag)) {
-		maph = (struct rmnet_map_header *)data;
-		packet_len = ntohs(maph->pkt_len);
+	frag = &shinfo->frags[start_frag];
+	/* Grab the QMAP header. Careful, as there's no guarantee that it's
+	 * continugous!
+	 */
+	if (likely(skb_frag_size(frag) >= sizeof(*maph))) {
+		maph = skb_frag_address(frag);
+	} else {
+		/* The header's split across pages. We can rebuild it.
+		 * Probably not faster or stronger than before. But certainly
+		 * more linear.
+		 */
+		if (skb_copy_bits(skb, 0, &__maph, sizeof(__maph)) < 0)
+			return -1;
 
-		/* Some hardware can send us empty frames. Catch them */
-		if (packet_len == 0)
-			return;
+		maph = &__maph;
+	}
 
-		packet_len += sizeof(*maph);
+	pkt_len = ntohs(maph->pkt_len);
+	/* Catch empty frames */
+	if (!pkt_len)
+		return -1;
 
-		if (port->data_format & RMNET_FLAGS_INGRESS_MAP_CKSUMV4) {
-			packet_len += sizeof(struct rmnet_map_dl_csum_trailer);
-		} else if (port->data_format &
-			   (RMNET_FLAGS_INGRESS_MAP_CKSUMV5 |
-			    RMNET_FLAGS_INGRESS_COALESCE) && !maph->cd_bit) {
-			u32 hsize = 0;
-			u8 type;
+	frag_desc = rmnet_get_frag_descriptor(port);
+	if (!frag_desc)
+		return -1;
 
-			type = ((struct rmnet_map_v5_coal_header *)
-				(data + sizeof(*maph)))->header_type;
-			switch (type) {
-			case RMNET_MAP_HEADER_TYPE_COALESCING:
-				hsize = sizeof(struct rmnet_map_v5_coal_header);
-				break;
-			case RMNET_MAP_HEADER_TYPE_CSUM_OFFLOAD:
-				hsize = sizeof(struct rmnet_map_v5_csum_header);
-				break;
-			}
+	pkt_len += sizeof(*maph);
+	if (port->data_format & RMNET_FLAGS_INGRESS_MAP_CKSUMV4) {
+		pkt_len += sizeof(struct rmnet_map_dl_csum_trailer);
+	} else if ((port->data_format & (RMNET_FLAGS_INGRESS_MAP_CKSUMV5 |
+					 RMNET_FLAGS_INGRESS_COALESCE)) &&
+		   !maph->cd_bit) {
+		u32 hsize = 0;
+		u8 type;
 
-			packet_len += hsize;
+		/* Check the type. This seems like should be overkill for less
+		 * than a single byte, doesn't it?
+		 */
+		if (likely(skb_frag_size(frag) >= sizeof(*maph) + 1)) {
+			type = *((u8 *)maph + sizeof(*maph));
+		} else {
+			if (skb_copy_bits(skb, sizeof(*maph), &type,
+					  sizeof(type)) < 0)
+				return -1;
 		}
 
-		if ((int)skb_frag_size(frag) - (int)packet_len < 0)
+		/* Type only uses the first 7 bits */
+		switch ((type & 0xFE) >> 1) {
+		case RMNET_MAP_HEADER_TYPE_COALESCING:
+			hsize = sizeof(struct rmnet_map_v5_coal_header);
+			break;
+		case RMNET_MAP_HEADER_TYPE_CSUM_OFFLOAD:
+			hsize = sizeof(struct rmnet_map_v5_csum_header);
+			break;
+		}
+
+		pkt_len += hsize;
+	}
+
+	/* Add all frags containing the packet data to the descriptor */
+	for (i = start_frag; pkt_len > 0 && i < shinfo->nr_frags; ) {
+		u32 frag_size;
+		u32 copy_len;
+
+		frag = &shinfo->frags[i];
+		frag_size = skb_frag_size(frag);
+		copy_len = min_t(u32, frag_size, pkt_len);
+		rc = rmnet_frag_descriptor_add_frag(frag_desc,
+						    skb_frag_page(frag),
+						    skb_frag_off(frag),
+						    copy_len);
+		if (rc < 0) {
+			rmnet_recycle_frag_descriptor(frag_desc, port);
+			return -1;
+		}
+
+		pkt_len -= copy_len;
+		skb_frag_off_add(frag, copy_len);
+		skb_frag_size_sub(frag, copy_len);
+		/* If the fragment is exhausted, we can move to the next one */
+		if (!skb_frag_size(frag))
+			i++;
+	}
+
+	if (pkt_len) {
+		/* Packet length is larger than the amount of data we have */
+		rmnet_recycle_frag_descriptor(frag_desc, port);
+		return -1;
+	}
+
+	list_add_tail(&frag_desc->list, list);
+	return (int)(i - start_frag);
+}
+
+void rmnet_frag_deaggregate(struct sk_buff *skb, struct rmnet_port *port,
+			    struct list_head *list)
+{
+	struct skb_shared_info *shinfo = skb_shinfo(skb);
+	u32 i = 0;
+	int rc;
+
+	while (i < shinfo->nr_frags) {
+		rc = rmnet_frag_deaggregate_one(skb, port, list, i);
+		if (rc < 0)
 			return;
 
-		rmnet_descriptor_add_frag(port, list, skb_frag_page(frag),
-					  frag->page_offset + offset,
-					  packet_len);
-
-		offset += packet_len;
-		data += packet_len;
+		i += (u32)rc;
 	}
 }
 
@@ -395,7 +690,7 @@ static void rmnet_frag_gso_stamp(struct sk_buff *skb,
 	shinfo->gso_segs = frag_desc->gso_segs;
 }
 
-/* Set the partial checksum information. Sets the transport checksum tot he
+/* Set the partial checksum information. Sets the transport checksum to the
  * pseudoheader checksum and sets the offload metadata.
  */
 static void rmnet_frag_partial_csum(struct sk_buff *skb,
@@ -448,7 +743,7 @@ static struct sk_buff *rmnet_alloc_skb(struct rmnet_frag_descriptor *frag_desc,
 {
 	struct sk_buff *head_skb, *current_skb, *skb;
 	struct skb_shared_info *shinfo;
-	struct rmnet_frag_descriptor *sub_frag, *tmp;
+	struct rmnet_fragment *frag, *tmp;
 
 	/* Use the exact sizes if we know them (i.e. RSB/RSC, rmnet_perf) */
 	if (frag_desc->hdrs_valid) {
@@ -460,24 +755,20 @@ static struct sk_buff *rmnet_alloc_skb(struct rmnet_frag_descriptor *frag_desc,
 			return NULL;
 
 		skb_reserve(head_skb, RMNET_MAP_DEAGGR_HEADROOM);
-		skb_put_data(head_skb, frag_desc->hdr_ptr, hdr_len);
+		rmnet_frag_copy_data(frag_desc, 0, hdr_len,
+				     skb_put(head_skb, hdr_len));
 		skb_reset_network_header(head_skb);
-
 		if (frag_desc->trans_len)
 			skb_set_transport_header(head_skb, frag_desc->ip_len);
 
-		/* If the headers we added are the start of the page,
-		 * we don't want to add them twice
-		 */
-		if (frag_desc->hdr_ptr == rmnet_frag_data_ptr(frag_desc)) {
-			/* "Header only" packets can be fast-forwarded */
-			if (hdr_len == skb_frag_size(&frag_desc->frag))
-				goto skip_frags;
+		/* Pull the headers off carefully */
+		if (hdr_len == frag_desc->len)
+			/* Fast forward "header only" packets */
+			goto skip_frags;
 
-			if (!rmnet_frag_pull(frag_desc, port, hdr_len)) {
-				kfree_skb(head_skb);
-				return NULL;
-			}
+		if (!rmnet_frag_pull(frag_desc, port, hdr_len)) {
+			kfree(head_skb);
+			return NULL;
 		}
 	} else {
 		/* Allocate enough space to avoid penalties in the stack
@@ -491,30 +782,20 @@ static struct sk_buff *rmnet_alloc_skb(struct rmnet_frag_descriptor *frag_desc,
 		skb_reserve(head_skb, RMNET_MAP_DEAGGR_HEADROOM);
 	}
 
-	/* Add main fragment */
-	get_page(skb_frag_page(&frag_desc->frag));
-	skb_add_rx_frag(head_skb, 0, skb_frag_page(&frag_desc->frag),
-			frag_desc->frag.page_offset,
-			skb_frag_size(&frag_desc->frag),
-			skb_frag_size(&frag_desc->frag));
-
 	shinfo = skb_shinfo(head_skb);
 	current_skb = head_skb;
 
-	/* Add in any frags from rmnet_perf */
-	list_for_each_entry_safe(sub_frag, tmp, &frag_desc->sub_frags, list) {
-		skb_frag_t *frag;
-		u32 frag_size;
-
-		frag = &sub_frag->frag;
-		frag_size = skb_frag_size(frag);
+	/* Add in the page fragments */
+	list_for_each_entry_safe(frag, tmp, &frag_desc->frags, list) {
+		struct page *p = skb_frag_page(&frag->frag);
+		u32 frag_size = skb_frag_size(&frag->frag);
 
 add_frag:
 		if (shinfo->nr_frags < MAX_SKB_FRAGS) {
-			get_page(skb_frag_page(frag));
-			skb_add_rx_frag(current_skb, shinfo->nr_frags,
-					skb_frag_page(frag), frag->page_offset,
-					frag_size, frag_size);
+			get_page(p);
+			skb_add_rx_frag(current_skb, shinfo->nr_frags, p,
+					skb_frag_off(&frag->frag), frag_size,
+					frag_size);
 			if (current_skb != head_skb) {
 				head_skb->len += frag_size;
 				head_skb->data_len += frag_size;
@@ -534,8 +815,6 @@ add_frag:
 			shinfo = skb_shinfo(current_skb);
 			goto add_frag;
 		}
-
-		rmnet_recycle_frag_descriptor(sub_frag, port);
 	}
 
 skip_frags:
@@ -559,6 +838,16 @@ skip_frags:
 		th = (struct tcphdr *)
 		     (rmnet_map_data_ptr(head_skb) + frag_desc->ip_len);
 		th->seq = frag_desc->tcp_seq;
+	}
+
+	if (frag_desc->tcp_flags_set) {
+		struct tcphdr *th;
+		__be16 *flags;
+
+		th = (struct tcphdr *)
+		     (rmnet_map_data_ptr(head_skb) + frag_desc->ip_len);
+		flags = (__be16 *)&tcp_flag_word(th);
+		*flags = frag_desc->tcp_flags;
 	}
 
 	/* Handle csum offloading */
@@ -656,58 +945,101 @@ static void __rmnet_frag_segment_data(struct rmnet_frag_descriptor *coal_desc,
 				      bool csum_valid)
 {
 	struct rmnet_priv *priv = netdev_priv(coal_desc->dev);
-	struct rmnet_frag_descriptor *new_frag;
-	u8 *hdr_start = rmnet_frag_data_ptr(coal_desc);
-	u32 offset;
+	struct rmnet_frag_descriptor *new_desc;
+	u32 dlen = coal_desc->gso_size * coal_desc->gso_segs;
+	u32 hlen = coal_desc->ip_len + coal_desc->trans_len;
+	u32 offset = hlen + coal_desc->data_offset;
+	int rc;
 
-	new_frag = rmnet_get_frag_descriptor(port);
-	if (!new_frag)
+	new_desc = rmnet_get_frag_descriptor(port);
+	if (!new_desc)
 		return;
 
-	/* Account for header lengths to access the data start */
-	offset = coal_desc->frag.page_offset + coal_desc->ip_len +
-		 coal_desc->trans_len + coal_desc->data_offset;
-
 	/* Header information and most metadata is the same as the original */
-	memcpy(new_frag, coal_desc, sizeof(*coal_desc));
-	INIT_LIST_HEAD(&new_frag->list);
-	INIT_LIST_HEAD(&new_frag->sub_frags);
-	rmnet_frag_fill(new_frag, skb_frag_page(&coal_desc->frag), offset,
-			coal_desc->gso_size * coal_desc->gso_segs);
+	memcpy(new_desc, coal_desc, sizeof(*coal_desc));
+	INIT_LIST_HEAD(&new_desc->list);
+	INIT_LIST_HEAD(&new_desc->frags);
+	new_desc->len = 0;
 
+	/* Add the header fragments */
+	rc = rmnet_frag_descriptor_add_frags_from(new_desc, coal_desc, 0,
+						  hlen);
+	if (rc < 0)
+		goto recycle;
+
+	/* Add in the data fragments */
+	rc = rmnet_frag_descriptor_add_frags_from(new_desc, coal_desc, offset,
+						  dlen);
+	if (rc < 0)
+		goto recycle;
+
+	/* Update protocol-specific metadata */
 	if (coal_desc->trans_proto == IPPROTO_TCP) {
-		struct tcphdr *th;
+		struct tcphdr *th, __th;
 
-		th = (struct tcphdr *)(hdr_start + coal_desc->ip_len);
-		new_frag->tcp_seq_set = 1;
-		new_frag->tcp_seq = htonl(ntohl(th->seq) +
+		th = rmnet_frag_header_ptr(coal_desc, coal_desc->ip_len,
+					   sizeof(*th), &__th);
+		if (!th)
+			goto recycle;
+
+		new_desc->tcp_seq_set = 1;
+		new_desc->tcp_seq = htonl(ntohl(th->seq) +
 					  coal_desc->data_offset);
-	} else if (coal_desc->trans_proto == IPPROTO_UDP) {
-		struct udphdr *uh;
 
-		uh = (struct udphdr *)(hdr_start + coal_desc->ip_len);
+		/* Don't allow any dangerous flags to appear in any segments
+		 * other than the last.
+		 */
+		if (th->fin || th->psh) {
+			if (offset + dlen < coal_desc->len) {
+				__be32 flag_word = tcp_flag_word(th);
+
+				/* Clear the FIN and PSH flags from this
+				 * segment.
+				 */
+				flag_word &= ~TCP_FLAG_FIN;
+				flag_word &= ~TCP_FLAG_PSH;
+
+				new_desc->tcp_flags_set = 1;
+				new_desc->tcp_flags = *((__be16 *)&flag_word);
+			}
+		}
+	} else if (coal_desc->trans_proto == IPPROTO_UDP) {
+		struct udphdr *uh, __uh;
+
+		uh = rmnet_frag_header_ptr(coal_desc, coal_desc->ip_len,
+					   sizeof(*uh), &__uh);
+		if (!uh)
+			goto recycle;
+
 		if (coal_desc->ip_proto == 4 && !uh->check)
 			csum_valid = true;
 	}
 
 	if (coal_desc->ip_proto == 4) {
-		struct iphdr *iph;
+		struct iphdr *iph, __iph;
 
-		iph = (struct iphdr *)hdr_start;
-		new_frag->ip_id_set = 1;
-		new_frag->ip_id = htons(ntohs(iph->id) + coal_desc->pkt_id);
+		iph = rmnet_frag_header_ptr(coal_desc, 0, sizeof(*iph),
+					    &__iph);
+		if (!iph)
+			goto recycle;
+
+		new_desc->ip_id_set = 1;
+		new_desc->ip_id = htons(ntohs(iph->id) + coal_desc->pkt_id);
 	}
 
-	new_frag->hdr_ptr = hdr_start;
-	new_frag->csum_valid = csum_valid;
+	new_desc->csum_valid = csum_valid;
 	priv->stats.coal.coal_reconstruct++;
 
 	/* Update meta information to move past the data we just segmented */
-	coal_desc->data_offset += coal_desc->gso_size * coal_desc->gso_segs;
+	coal_desc->data_offset += dlen;
 	coal_desc->pkt_id = pkt_id + 1;
 	coal_desc->gso_segs = 0;
 
-	list_add_tail(&new_frag->list, list);
+	list_add_tail(&new_desc->list, list);
+	return;
+
+recycle:
+	rmnet_recycle_frag_descriptor(new_desc, port);
 }
 
 static bool rmnet_frag_validate_csum(struct rmnet_frag_descriptor *frag_desc)
@@ -717,7 +1049,14 @@ static bool rmnet_frag_validate_csum(struct rmnet_frag_descriptor *frag_desc)
 	__wsum csum;
 	__sum16 pseudo;
 
-	datagram_len = skb_frag_size(&frag_desc->frag) - frag_desc->ip_len;
+	/* Keep analysis tools happy, since they will see that
+	 * rmnet_frag_data_ptr() could return NULL. It can't in this case,
+	 * since we can't get this far otherwise...
+	 */
+	if (unlikely(!data))
+		return false;
+
+	datagram_len = frag_desc->len - frag_desc->ip_len;
 	if (frag_desc->ip_proto == 4) {
 		struct iphdr *iph = (struct iphdr *)data;
 
@@ -745,27 +1084,45 @@ rmnet_frag_segment_coal_data(struct rmnet_frag_descriptor *coal_desc,
 			     u64 nlo_err_mask, struct rmnet_port *port,
 			     struct list_head *list)
 {
-	struct iphdr *iph;
 	struct rmnet_priv *priv = netdev_priv(coal_desc->dev);
-	struct rmnet_map_v5_coal_header *coal_hdr;
+	struct rmnet_map_v5_coal_header coal_hdr;
+	u8 *version;
 	u16 pkt_len;
 	u8 pkt, total_pkt = 0;
 	u8 nlo;
 	bool gro = coal_desc->dev->features & NETIF_F_GRO_HW;
 	bool zero_csum = false;
 
+	/* Copy the coal header into our local storage before pulling it. It's
+	 * possible that this header (or part of it) is the last port of a page
+	 * a pulling it off would cause it to be freed. Referring back to the
+	 * header would be invalid in that case.
+	 */
+	if (rmnet_frag_copy_data(coal_desc, sizeof(struct rmnet_map_header),
+				 sizeof(coal_hdr), &coal_hdr) < 0)
+		return;
+
 	/* Pull off the headers we no longer need */
-	if (!rmnet_frag_pull(coal_desc, port, sizeof(struct rmnet_map_header)))
+	if (!rmnet_frag_pull(coal_desc, port, sizeof(struct rmnet_map_header) +
+					      sizeof(coal_hdr)))
 		return;
 
-	coal_hdr = (struct rmnet_map_v5_coal_header *)
-		   rmnet_frag_data_ptr(coal_desc);
-	if (!rmnet_frag_pull(coal_desc, port, sizeof(*coal_hdr)))
+	/* By definition, this byte is linear, and the first byte on the
+	 * first fragment. ;) Hence why no header_ptr() call is needed
+	 * for it.
+	*/
+	version = rmnet_frag_data_ptr(coal_desc);
+	if (unlikely(!version))
 		return;
 
-	iph = (struct iphdr *)rmnet_frag_data_ptr(coal_desc);
+	if ((*version & 0xF0) == 0x40) {
+		struct iphdr *iph, __iph;
 
-	if (iph->version == 4) {
+		iph = rmnet_frag_header_ptr(coal_desc, 0, sizeof(*iph),
+					    &__iph);
+		if (!iph)
+			return;
+
 		coal_desc->ip_proto = 4;
 		coal_desc->ip_len = iph->ihl * 4;
 		coal_desc->trans_proto = iph->protocol;
@@ -773,13 +1130,19 @@ rmnet_frag_segment_coal_data(struct rmnet_frag_descriptor *coal_desc,
 		/* Don't allow coalescing of any packets with IP options */
 		if (iph->ihl != 5)
 			gro = false;
-	} else if (iph->version == 6) {
-		struct ipv6hdr *ip6h = (struct ipv6hdr *)iph;
+	} else if ((*version & 0xF0) == 0x60) {
+		struct ipv6hdr *ip6h, __ip6h;
 		int ip_len;
 		__be16 frag_off;
-		u8 protocol = ip6h->nexthdr;
+		u8 protocol;
+
+		ip6h = rmnet_frag_header_ptr(coal_desc, 0, sizeof(*ip6h),
+					     &__ip6h);
+		if (!ip6h)
+			return;
 
 		coal_desc->ip_proto = 6;
+		protocol = ip6h->nexthdr;
 		ip_len = rmnet_frag_ipv6_skip_exthdr(coal_desc,
 						     sizeof(*ip6h),
 						     &protocol,
@@ -808,21 +1171,29 @@ rmnet_frag_segment_coal_data(struct rmnet_frag_descriptor *coal_desc,
 	}
 
 	if (coal_desc->trans_proto == IPPROTO_TCP) {
-		struct tcphdr *th;
+		struct tcphdr *th, __th;
 
-		th = (struct tcphdr *)((u8 *)iph + coal_desc->ip_len);
+		th = rmnet_frag_header_ptr(coal_desc,
+					   coal_desc->ip_len, sizeof(*th),
+					   &__th);
+		if (!th)
+			return;
+
 		coal_desc->trans_len = th->doff * 4;
 		priv->stats.coal.coal_tcp++;
-		priv->stats.coal.coal_tcp_bytes +=
-			skb_frag_size(&coal_desc->frag);
+		priv->stats.coal.coal_tcp_bytes += coal_desc->len;
 	} else if (coal_desc->trans_proto == IPPROTO_UDP) {
-		struct udphdr *uh;
+		struct udphdr *uh, __uh;
 
-		uh = (struct udphdr *)((u8 *)iph + coal_desc->ip_len);
+		uh = rmnet_frag_header_ptr(coal_desc,
+					   coal_desc->ip_len, sizeof(*uh),
+					   &__uh);
+		if (!uh)
+			return;
+
 		coal_desc->trans_len = sizeof(*uh);
 		priv->stats.coal.coal_udp++;
-		priv->stats.coal.coal_udp_bytes +=
-			skb_frag_size(&coal_desc->frag);
+		priv->stats.coal.coal_udp_bytes += coal_desc->len;
 		if (coal_desc->ip_proto == 4 && !uh->check)
 			zero_csum = true;
 	} else {
@@ -832,15 +1203,14 @@ rmnet_frag_segment_coal_data(struct rmnet_frag_descriptor *coal_desc,
 
 	coal_desc->hdrs_valid = 1;
 
-	if (rmnet_map_v5_csum_buggy(coal_hdr) && !zero_csum) {
+	if (rmnet_map_v5_csum_buggy(&coal_hdr) && !zero_csum) {
 		/* Mark the checksum as valid if it checks out */
 		if (rmnet_frag_validate_csum(coal_desc))
 			coal_desc->csum_valid = true;
 
-		coal_desc->hdr_ptr = rmnet_frag_data_ptr(coal_desc);
-		coal_desc->gso_size = ntohs(coal_hdr->nl_pairs[0].pkt_len);
+		coal_desc->gso_size = ntohs(coal_hdr.nl_pairs[0].pkt_len);
 		coal_desc->gso_size -= coal_desc->ip_len + coal_desc->trans_len;
-		coal_desc->gso_segs = coal_hdr->nl_pairs[0].num_packets;
+		coal_desc->gso_segs = coal_hdr.nl_pairs[0].num_packets;
 		list_add_tail(&coal_desc->list, list);
 		return;
 	}
@@ -849,22 +1219,21 @@ rmnet_frag_segment_coal_data(struct rmnet_frag_descriptor *coal_desc,
 	 * no checksum errors, and are allowing GRO. We can just reuse this
 	 * descriptor unchanged.
 	 */
-	if (gro && coal_hdr->num_nlos == 1 && coal_hdr->csum_valid) {
+	if (gro && coal_hdr.num_nlos == 1 && coal_hdr.csum_valid) {
 		coal_desc->csum_valid = true;
-		coal_desc->hdr_ptr = rmnet_frag_data_ptr(coal_desc);
-		coal_desc->gso_size = ntohs(coal_hdr->nl_pairs[0].pkt_len);
+		coal_desc->gso_size = ntohs(coal_hdr.nl_pairs[0].pkt_len);
 		coal_desc->gso_size -= coal_desc->ip_len + coal_desc->trans_len;
-		coal_desc->gso_segs = coal_hdr->nl_pairs[0].num_packets;
+		coal_desc->gso_segs = coal_hdr.nl_pairs[0].num_packets;
 		list_add_tail(&coal_desc->list, list);
 		return;
 	}
 
 	/* Segment the coalesced descriptor into new packets */
-	for (nlo = 0; nlo < coal_hdr->num_nlos; nlo++) {
-		pkt_len = ntohs(coal_hdr->nl_pairs[nlo].pkt_len);
+	for (nlo = 0; nlo < coal_hdr.num_nlos; nlo++) {
+		pkt_len = ntohs(coal_hdr.nl_pairs[nlo].pkt_len);
 		pkt_len -= coal_desc->ip_len + coal_desc->trans_len;
 		coal_desc->gso_size = pkt_len;
-		for (pkt = 0; pkt < coal_hdr->nl_pairs[nlo].num_packets;
+		for (pkt = 0; pkt < coal_hdr.nl_pairs[nlo].num_packets;
 		     pkt++, total_pkt++, nlo_err_mask >>= 1) {
 			bool csum_err = nlo_err_mask & 1;
 
@@ -900,7 +1269,6 @@ rmnet_frag_segment_coal_data(struct rmnet_frag_descriptor *coal_desc,
 							  false);
 			} else {
 				coal_desc->gso_segs++;
-
 			}
 		}
 
@@ -967,15 +1335,18 @@ static int
 rmnet_frag_data_check_coal_header(struct rmnet_frag_descriptor *frag_desc,
 				  u64 *nlo_err_mask)
 {
-	struct rmnet_map_v5_coal_header *coal_hdr;
-	unsigned char *data = rmnet_frag_data_ptr(frag_desc);
+	struct rmnet_map_v5_coal_header *coal_hdr, __coal_hdr;
 	struct rmnet_priv *priv = netdev_priv(frag_desc->dev);
 	u64 mask = 0;
 	int i;
 	u8 veid, pkts = 0;
 
-	coal_hdr = (struct rmnet_map_v5_coal_header *)
-		   (data + sizeof(struct rmnet_map_header));
+	coal_hdr = rmnet_frag_header_ptr(frag_desc,
+					 sizeof(struct rmnet_map_header),
+					 sizeof(*coal_hdr), &__coal_hdr);
+	if (!coal_hdr)
+		return -EINVAL;
+
 	veid = coal_hdr->virtual_channel_id;
 
 	if (coal_hdr->num_nlos == 0 ||
@@ -1022,11 +1393,24 @@ int rmnet_frag_process_next_hdr_packet(struct rmnet_frag_descriptor *frag_desc,
 				       struct list_head *list,
 				       u16 len)
 {
+	struct rmnet_map_v5_csum_header *csum_hdr, __csum_hdr;
 	struct rmnet_priv *priv = netdev_priv(frag_desc->dev);
 	u64 nlo_err_mask;
+	u32 offset = sizeof(struct rmnet_map_header);
 	int rc = 0;
 
-	switch (rmnet_frag_get_next_hdr_type(frag_desc)) {
+	/* Grab the header type. It's easier to grab enough for a full csum
+	 * offload header here since it's only 8 bytes and then check the
+	 * header type using that. This also doubles as a check to make sure
+	 * there's enough data after the QMAP header to ensure that another
+	 * header is present.
+	 */
+	csum_hdr = rmnet_frag_header_ptr(frag_desc, offset, sizeof(*csum_hdr),
+					 &__csum_hdr);
+	if (!csum_hdr)
+		return -EINVAL;
+
+	switch (csum_hdr->header_type) {
 	case RMNET_MAP_HEADER_TYPE_COALESCING:
 		priv->stats.coal.coal_rx++;
 		rc = rmnet_frag_data_check_coal_header(frag_desc,
@@ -1041,7 +1425,9 @@ int rmnet_frag_process_next_hdr_packet(struct rmnet_frag_descriptor *frag_desc,
 			rmnet_recycle_frag_descriptor(frag_desc, port);
 		break;
 	case RMNET_MAP_HEADER_TYPE_CSUM_OFFLOAD:
-		if (rmnet_frag_get_csum_valid(frag_desc)) {
+		if (unlikely(!(frag_desc->dev->features & NETIF_F_RXCSUM))) {
+			priv->stats.csum_sw++;
+		} else if (csum_hdr->csum_valid_required) {
 			priv->stats.csum_ok++;
 			frag_desc->csum_valid = true;
 		} else {
@@ -1049,13 +1435,10 @@ int rmnet_frag_process_next_hdr_packet(struct rmnet_frag_descriptor *frag_desc,
 		}
 
 		if (!rmnet_frag_pull(frag_desc, port,
-				     sizeof(struct rmnet_map_header) +
-				     sizeof(struct rmnet_map_v5_csum_header))) {
+				     offset + sizeof(*csum_hdr))) {
 			rc = -EINVAL;
 			break;
 		}
-
-		frag_desc->hdr_ptr = rmnet_frag_data_ptr(frag_desc);
 
 		/* Remove padding only for csum offload packets.
 		 * Coalesced packets should never have padding.
@@ -1085,14 +1468,17 @@ __rmnet_frag_ingress_handler(struct rmnet_frag_descriptor *frag_desc,
 			     struct rmnet_port *port)
 {
 	rmnet_perf_desc_hook_t rmnet_perf_ingress;
-	struct rmnet_map_header *qmap;
+	struct rmnet_map_header *qmap, __qmap;
 	struct rmnet_endpoint *ep;
 	struct rmnet_frag_descriptor *frag, *tmp;
 	LIST_HEAD(segs);
 	u16 len, pad;
 	u8 mux_id;
 
-	qmap = (struct rmnet_map_header *)skb_frag_address(&frag_desc->frag);
+	qmap = rmnet_frag_header_ptr(frag_desc, 0, sizeof(*qmap), &__qmap);
+	if (!qmap)
+		goto recycle;
+
 	mux_id = qmap->mux_id;
 	pad = qmap->pad_len;
 	len = ntohs(qmap->pkt_len) - pad;
@@ -1100,12 +1486,12 @@ __rmnet_frag_ingress_handler(struct rmnet_frag_descriptor *frag_desc,
 	if (qmap->cd_bit) {
 		qmi_rmnet_set_dl_msg_active(port);
 		if (port->data_format & RMNET_INGRESS_FORMAT_DL_MARKER) {
-			rmnet_frag_flow_command(qmap, port, len);
+			rmnet_frag_flow_command(frag_desc, port, len);
 			goto recycle;
 		}
 
 		if (port->data_format & RMNET_FLAGS_INGRESS_MAP_COMMANDS)
-			rmnet_frag_command(qmap, port);
+			rmnet_frag_command(frag_desc, qmap, port);
 
 		goto recycle;
 	}
@@ -1130,8 +1516,6 @@ __rmnet_frag_ingress_handler(struct rmnet_frag_descriptor *frag_desc,
 		/* We only have the main QMAP header to worry about */
 		if (!rmnet_frag_pull(frag_desc, port, sizeof(*qmap)))
 			return;
-
-		frag_desc->hdr_ptr = rmnet_frag_data_ptr(frag_desc);
 
 		if (!rmnet_frag_trim(frag_desc, port, len))
 			return;
@@ -1180,8 +1564,7 @@ void rmnet_frag_ingress_handler(struct sk_buff *skb,
 	while (skb) {
 		struct sk_buff *skb_frag;
 
-		rmnet_frag_deaggregate(skb_shinfo(skb)->frags, port,
-				       &desc_list);
+		rmnet_frag_deaggregate(skb, port, &desc_list);
 		if (!list_empty(&desc_list)) {
 			struct rmnet_frag_descriptor *frag_desc, *tmp;
 
@@ -1241,7 +1624,7 @@ int rmnet_descriptor_init(struct rmnet_port *port)
 			return -ENOMEM;
 
 		INIT_LIST_HEAD(&frag_desc->list);
-		INIT_LIST_HEAD(&frag_desc->sub_frags);
+		INIT_LIST_HEAD(&frag_desc->frags);
 		list_add_tail(&frag_desc->list, &pool->free_list);
 		pool->pool_size++;
 	}

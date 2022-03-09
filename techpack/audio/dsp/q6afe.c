@@ -32,6 +32,12 @@
 #include "../asoc/codecs/tfa98xx/inc/tfa_platform_interface_definition.h"
 #endif
 
+#include <soc/qcom/subsystem_restart.h>
+#define ADSP_ERR_LIMITED_COUNT   (3)
+#define ADSP_TO_LIMITED_COUNT   (10) //TIMEOUT
+static int err_count = 0;
+static int apr_err_count = 0;
+
 #define WAKELOCK_TIMEOUT	5000
 #define AFE_CLK_TOKEN	1024
 
@@ -1433,17 +1439,35 @@ static int afe_apr_send_pkt(void *data, wait_queue_head_t *wait)
 				ret = -ETIMEDOUT;
 				trace_printk("%s: wait for ADSP response timed out\n",
 					__func__);
+				apr_err_count++;
+				if (apr_err_count >= ADSP_TO_LIMITED_COUNT) {
+					apr_err_count = 0;
+					pr_err("%s: DSP returned error more than limited, restart now !\n", __func__);
+					subsystem_restart("adsp");
+				}
 			} else if (atomic_read(&this_afe.status) > 0) {
 				pr_err("%s: DSP returned error[%s]\n", __func__,
 					adsp_err_get_err_str(atomic_read(
 					&this_afe.status)));
 				ret = adsp_err_get_lnx_err_code(
 						atomic_read(&this_afe.status));
+				if (atomic_read(&this_afe.status) == ADSP_ENEEDMORE)
+					apr_err_count++;
+				else
+					apr_err_count = 0;
+
+				if (apr_err_count >= ADSP_ERR_LIMITED_COUNT) {
+					apr_err_count = 0;
+					pr_err("%s: DSP returned error more than limited, restart now !\n", __func__);
+					subsystem_restart("adsp");
+				}
 			} else {
 				ret = 0;
+				apr_err_count = 0;
 			}
 		} else {
 			ret = 0;
+			apr_err_count = 0;
 		}
 	} else if (ret == 0) {
 		pr_err("%s: packet not transmitted\n", __func__);
@@ -1474,17 +1498,35 @@ static int afe_apr_send_clk_pkt(void *data, wait_queue_head_t *wait)
 			if (!ret) {
 				pr_err("%s: timeout\n", __func__);
 				ret = -ETIMEDOUT;
+				err_count++;
+				if (err_count >= ADSP_TO_LIMITED_COUNT) {
+					err_count = 0;
+					pr_err("%s: DSP returned error more than limited, restart now !\n", __func__);
+					subsystem_restart("adsp");
+				}
 			} else if (atomic_read(&this_afe.clk_status) > 0) {
-				pr_err("%s: DSP returned error[%s]\n", __func__,
+				pr_err("%s: DSP returned error[%s][%d]\n", __func__,
 					adsp_err_get_err_str(atomic_read(
-					&this_afe.clk_status)));
+					&this_afe.clk_status)), err_count);
 				ret = adsp_err_get_lnx_err_code(
 						atomic_read(&this_afe.clk_status));
+				if (atomic_read(&this_afe.clk_status) == ADSP_ENEEDMORE)
+					err_count++;
+				else
+					err_count = 0;
+
+				if (err_count >= ADSP_ERR_LIMITED_COUNT) {
+					err_count = 0;
+					pr_err("%s: DSP returned error more than limited, restart now !\n", __func__);
+					subsystem_restart("adsp");
+				}
 			} else {
 				ret = 0;
+				err_count = 0;
 			}
 		} else {
 			ret = 0;
+			err_count = 0;
 		}
 	} else if (ret == 0) {
 		pr_err("%s: packet not transmitted\n", __func__);

@@ -285,6 +285,7 @@ struct batt_chg_health {
 	enum chg_health_state rest_state;
 	int rest_cc_max;
 	int rest_fv_uv;
+	ktime_t active_time;
 };
 
 #define CHG_HEALTH_REST_IS_ACTIVE(rest) \
@@ -395,7 +396,7 @@ const char *gbms_chg_ev_adapter_s(int adapter);
 /* Binned cycle count */
 #define GBMS_CCBIN_BUCKET_COUNT	10
 
-#if IS_ENABLED(CONFIG_QPNP_QG)
+#if IS_ENABLED(CONFIG_QPNP_QG) || IS_ENABLED(CONFIG_QPNP_FG_GEN4)
 #undef GBMS_CCBIN_BUCKET_COUNT
 #define GBMS_CCBIN_BUCKET_COUNT	8
 #endif

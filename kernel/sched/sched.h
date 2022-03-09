@@ -89,8 +89,6 @@ struct cpuidle_state;
 
 #define CPU_NR		8
 
-#define TASK_BITS (PID_MAX_DEFAULT + BITS_PER_LONG)
-
 extern __read_mostly bool sched_predl;
 extern unsigned int sched_capacity_margin_up[CPU_NR];
 extern unsigned int sched_capacity_margin_down[CPU_NR];
@@ -1460,7 +1458,7 @@ extern void sched_ttwu_pending(void);
 
 /*
  * The domain tree (rq->sd) is protected by RCU's quiescent state transition.
- * See detach_destroy_domains: synchronize_sched for details.
+ * See destroy_sched_domains: call_rcu for details.
  *
  * The domain tree of any CPU may only be accessed from within
  * preempt-disabled sections.

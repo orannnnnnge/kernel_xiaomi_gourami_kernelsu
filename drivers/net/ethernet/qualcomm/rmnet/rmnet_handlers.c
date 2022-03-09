@@ -1,5 +1,4 @@
-// SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2013-2019, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2013-2021, The Linux Foundation. All rights reserved.
  *
  * RMNET Data ingress/egress handler
  *
@@ -43,25 +42,9 @@ EXPORT_TRACEPOINT_SYMBOL(rmnet_freq_update);
 EXPORT_TRACEPOINT_SYMBOL(rmnet_freq_reset);
 EXPORT_TRACEPOINT_SYMBOL(rmnet_freq_boost);
 
+
+
 /* Helper Functions */
-
-static int rmnet_check_skb_can_gro(struct sk_buff *skb)
-{
-	unsigned char *data = rmnet_map_data_ptr(skb);
-
-	switch (skb->protocol) {
-	case htons(ETH_P_IP):
-		if (((struct iphdr *)data)->protocol == IPPROTO_TCP)
-			return 0;
-		break;
-	case htons(ETH_P_IPV6):
-		if (((struct ipv6hdr *)data)->nexthdr == IPPROTO_TCP)
-			return 0;
-		/* Fall through */
-	}
-
-	return -EPROTONOSUPPORT;
-}
 
 void rmnet_set_skb_proto(struct sk_buff *skb)
 {
@@ -89,19 +72,24 @@ bool rmnet_slow_start_on(u32 hash_key)
 	rmnet_shs_slow_start_on = rcu_dereference(rmnet_shs_slow_start_detect);
 	if (rmnet_shs_slow_start_on)
 		return rmnet_shs_slow_start_on(hash_key);
+
 	return false;
 }
 EXPORT_SYMBOL(rmnet_slow_start_on);
 
 /* Shs hook handler */
-
 int (*rmnet_shs_skb_entry)(struct sk_buff *skb,
-			   struct rmnet_port *port) __rcu __read_mostly;
+			   struct rmnet_shs_clnt_s *cfg) __rcu __read_mostly;
 EXPORT_SYMBOL(rmnet_shs_skb_entry);
+
+int (*rmnet_shs_switch)(struct sk_buff *skb,
+			   struct rmnet_shs_clnt_s *cfg) __rcu __read_mostly;
+EXPORT_SYMBOL(rmnet_shs_switch);
+
 
 /* Shs hook handler for work queue*/
 int (*rmnet_shs_skb_entry_wq)(struct sk_buff *skb,
-			      struct rmnet_port *port) __rcu __read_mostly;
+			      struct rmnet_shs_clnt_s *cfg) __rcu __read_mostly;
 EXPORT_SYMBOL(rmnet_shs_skb_entry_wq);
 
 /* Generic handler */
@@ -109,8 +97,8 @@ EXPORT_SYMBOL(rmnet_shs_skb_entry_wq);
 void
 rmnet_deliver_skb(struct sk_buff *skb, struct rmnet_port *port)
 {
-	int (*rmnet_shs_stamp)(struct sk_buff *skb, struct rmnet_port *port);
-	struct rmnet_priv *priv = netdev_priv(skb->dev);
+	int (*rmnet_shs_stamp)(struct sk_buff *skb,
+			       struct rmnet_shs_clnt_s *cfg);
 
 	trace_rmnet_low(RMNET_MODULE, RMNET_DLVR_SKB, 0xDEF, 0xDEF,
 			0xDEF, 0xDEF, (void *)skb, NULL);
@@ -124,28 +112,13 @@ rmnet_deliver_skb(struct sk_buff *skb, struct rmnet_port *port)
 	rcu_read_lock();
 	rmnet_shs_stamp = rcu_dereference(rmnet_shs_skb_entry);
 	if (rmnet_shs_stamp) {
-		rmnet_shs_stamp(skb, port);
+		rmnet_shs_stamp(skb, &port->shs_cfg);
 		rcu_read_unlock();
 		return;
 	}
 	rcu_read_unlock();
 
-	if (port->data_format & RMNET_INGRESS_FORMAT_DL_MARKER) {
-		if (!rmnet_check_skb_can_gro(skb) &&
-		    port->dl_marker_flush >= 0) {
-			struct napi_struct *napi = get_current_napi_context();
-
-			napi_gro_receive(napi, skb);
-			port->dl_marker_flush++;
-		} else {
-			netif_receive_skb(skb);
-		}
-	} else {
-		if (!rmnet_check_skb_can_gro(skb))
-			gro_cells_receive(&priv->gro_cells, skb);
-		else
-			netif_receive_skb(skb);
-	}
+	netif_receive_skb(skb);
 }
 EXPORT_SYMBOL(rmnet_deliver_skb);
 
@@ -154,7 +127,8 @@ void
 rmnet_deliver_skb_wq(struct sk_buff *skb, struct rmnet_port *port,
 		     enum rmnet_packet_context ctx)
 {
-	int (*rmnet_shs_stamp)(struct sk_buff *skb, struct rmnet_port *port);
+	int (*rmnet_shs_stamp)(struct sk_buff *skb,
+			       struct rmnet_shs_clnt_s *cfg);
 	struct rmnet_priv *priv = netdev_priv(skb->dev);
 
 	trace_rmnet_low(RMNET_MODULE, RMNET_DLVR_SKB, 0xDEF, 0xDEF,
@@ -173,35 +147,16 @@ rmnet_deliver_skb_wq(struct sk_buff *skb, struct rmnet_port *port,
 	rmnet_shs_stamp = (!ctx) ? rcu_dereference(rmnet_shs_skb_entry) :
 				   rcu_dereference(rmnet_shs_skb_entry_wq);
 	if (rmnet_shs_stamp) {
-		rmnet_shs_stamp(skb, port);
+		rmnet_shs_stamp(skb, &port->shs_cfg);
 		rcu_read_unlock();
 		return;
 	}
 	rcu_read_unlock();
 
-	if (ctx == RMNET_NET_RX_CTX) {
-		if (port->data_format & RMNET_INGRESS_FORMAT_DL_MARKER) {
-			if (!rmnet_check_skb_can_gro(skb) &&
-			    port->dl_marker_flush >= 0) {
-				struct napi_struct *napi =
-					get_current_napi_context();
-				napi_gro_receive(napi, skb);
-				port->dl_marker_flush++;
-			} else {
-				netif_receive_skb(skb);
-			}
-		} else {
-			if (!rmnet_check_skb_can_gro(skb))
-				gro_cells_receive(&priv->gro_cells, skb);
-			else
-				netif_receive_skb(skb);
-		}
-	} else {
-		if ((port->data_format & RMNET_INGRESS_FORMAT_DL_MARKER) &&
-		    port->dl_marker_flush >= 0)
-			port->dl_marker_flush++;
+	if (ctx == RMNET_NET_RX_CTX)
+		netif_receive_skb(skb);
+	else
 		gro_cells_receive(&priv->gro_cells, skb);
-	}
 }
 EXPORT_SYMBOL(rmnet_deliver_skb_wq);
 
@@ -282,10 +237,8 @@ __rmnet_map_ingress_handler(struct sk_buff *skb,
 		__skb_queue_tail(&list, skb);
 	}
 
-#if IS_ENABLED(CONFIG_QCOM_QMI_HELPERS)
 	if (port->data_format & RMNET_INGRESS_FORMAT_PS)
 		qmi_rmnet_work_maybe_restart(port);
-#endif
 
 	rmnet_deliver_skb_list(&list, port);
 	return;
@@ -386,10 +339,8 @@ static int rmnet_map_egress_handler(struct sk_buff *skb,
 			return -ENOMEM;
 	}
 
-#if IS_ENABLED(CONFIG_QCOM_QMI_HELPERS)
 	if (port->data_format & RMNET_INGRESS_FORMAT_PS)
 		qmi_rmnet_work_maybe_restart(port);
-#endif
 
 	if (csum_type)
 		rmnet_map_checksum_uplink_packet(skb, port, orig_dev,
@@ -435,6 +386,8 @@ rx_handler_result_t rmnet_rx_handler(struct sk_buff **pskb)
 	struct sk_buff *skb = *pskb;
 	struct rmnet_port *port;
 	struct net_device *dev;
+	int (*rmnet_core_shs_switch)(struct sk_buff *skb,
+				     struct rmnet_shs_clnt_s *cfg);
 
 	if (!skb)
 		goto done;
@@ -454,6 +407,17 @@ rx_handler_result_t rmnet_rx_handler(struct sk_buff **pskb)
 
 	switch (port->rmnet_mode) {
 	case RMNET_EPMODE_VND:
+
+		rcu_read_lock();
+		rmnet_core_shs_switch = rcu_dereference(rmnet_shs_switch);
+		if (rmnet_core_shs_switch && !skb->cb[1]) {
+			skb->cb[1] = 1;
+			rmnet_core_shs_switch(skb, &port->phy_shs_cfg);
+			rcu_read_unlock();
+			return RX_HANDLER_CONSUMED;
+		}
+		rcu_read_unlock();
+
 		rmnet_map_ingress_handler(skb, port);
 		break;
 	case RMNET_EPMODE_BRIDGE:

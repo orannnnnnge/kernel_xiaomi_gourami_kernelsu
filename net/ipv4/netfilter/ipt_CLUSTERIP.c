@@ -56,7 +56,7 @@ struct clusterip_config {
 #endif
 	enum clusterip_hashmode hash_mode;	/* which hashing mode */
 	u_int32_t hash_initval;			/* hash initialization */
-	struct rcu_head rcu;			/* for call_rcu_bh */
+	struct rcu_head rcu;			/* for call_rcu */
 	struct net *net;			/* netns for pernet list */
 	char ifname[IFNAMSIZ];			/* device ifname */
 };
@@ -107,7 +107,7 @@ static inline void
 clusterip_config_put(struct clusterip_config *c)
 {
 	if (refcount_dec_and_test(&c->refcount))
-		call_rcu_bh(&c->rcu, clusterip_config_rcu_free);
+		call_rcu(&c->rcu, clusterip_config_rcu_free);
 }
 
 /* decrease the count of entries using/referencing this config.  If last
@@ -907,8 +907,8 @@ static void __exit clusterip_tg_exit(void)
 	xt_unregister_target(&clusterip_tg_reg);
 	unregister_pernet_subsys(&clusterip_net_ops);
 
-	/* Wait for completion of call_rcu_bh()'s (clusterip_config_rcu_free) */
-	rcu_barrier_bh();
+	/* Wait for completion of call_rcu()'s (clusterip_config_rcu_free) */
+	rcu_barrier();
 }
 
 module_init(clusterip_tg_init);

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2017-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2017-2019, 2021, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/of.h>
@@ -72,6 +72,8 @@ struct glink_ssr {
 	struct work_struct unreg_work;
 	struct kref refcount;
 };
+
+extern const struct dev_pm_ops glink_native_pm_ops;
 
 struct edge_info {
 	struct list_head list;
@@ -446,6 +448,7 @@ static struct platform_driver glink_probe_driver = {
 	.driver = {
 		.name = "msm_glink",
 		.of_match_table = glink_match_table,
+		.pm = &glink_native_pm_ops,
 	},
 };
 

@@ -2211,10 +2211,6 @@ int kgsl_pwrctrl_init(struct kgsl_device *device)
 
 	pwr->power_flags = 0;
 
-	pwr->l2pc_update_queue = of_property_read_bool(
-				device->pdev->dev.of_node,
-				"qcom,l2pc-update-queue");
-
 	pm_runtime_enable(&pdev->dev);
 
 	gpu_cfg_node =
