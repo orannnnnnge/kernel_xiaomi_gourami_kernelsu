@@ -23,7 +23,7 @@ config QPNP_REVID
 	  type is mapped to a QTI chip part number and logged as well.
 
 config SPS
-	bool "SPS support"
+	tristate "SPS support"
 	select GENERIC_ALLOCATOR
 	help
 	  The SPS (Smart Peripheral Switch) is a DMA engine.
@@ -54,7 +54,7 @@ config SPS_SUPPORT_NDP_BAM
 	  BAM.
 
 config GSI
-	bool "GSI support"
+	tristate "GSI support"
 	help
 	  This driver provides the transport needed to talk to the
 	  IPA core. It replaces the BAM transport used previously.
@@ -215,7 +215,7 @@ config IPA_EMULATION
 	  shall be connected via PCIE to X86 machine.
 
 config USB_BAM
-	bool "USB BAM Driver"
+	tristate "USB BAM Driver"
 	depends on SPS && USB_GADGET
 	help
 	  Enabling this option adds USB BAM Driver.

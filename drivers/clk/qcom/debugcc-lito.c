@@ -19,6 +19,7 @@
 #include "clk-debug.h"
 #include "common.h"
 
+#ifdef CONFIG_DEBUG_FS
 static struct measure_clk_data debug_mux_priv = {
 	.ctl_reg = 0x62038,
 	.status_reg = 0x6203C,
@@ -798,12 +799,14 @@ struct clk_hw *debugcc_lito_hws[] = {
 	&perfpcl_clk.hw,
 	&pwrcl_clk.hw,
 };
+#endif /* CONFIG_DEBUG_FS */
 
 static const struct of_device_id clk_debug_match_table[] = {
 	{ .compatible = "qcom,lito-debugcc" },
 	{ }
 };
 
+#ifdef CONFIG_DEBUG_FS
 static int clk_debug_lito_probe(struct platform_device *pdev)
 {
 	struct clk *clk;
@@ -849,6 +852,12 @@ static int clk_debug_lito_probe(struct platform_device *pdev)
 		}
 	}
 
+	ret = clk_debug_measure_register(&gcc_debug_mux.hw);
+	if (ret) {
+		dev_err(&pdev->dev, "Could not register Measure clock\n");
+		return ret;
+	}
+
 	for (i = 0; i < ARRAY_SIZE(debugcc_lito_hws); i++) {
 		clk = devm_clk_register(&pdev->dev, debugcc_lito_hws[i]);
 		if (IS_ERR(clk)) {
@@ -858,12 +867,11 @@ static int clk_debug_lito_probe(struct platform_device *pdev)
 		}
 	}
 
-	ret = clk_debug_measure_register(&gcc_debug_mux.hw);
-	if (ret)
-		dev_err(&pdev->dev, "Could not register Measure clock\n");
-
 	return ret;
 }
+#else
+static int clk_debug_lito_probe(struct platform_device *pdev) { return 0; }
+#endif /* CONFIG_DEBUG_FS */
 
 static struct platform_driver clk_debug_driver = {
 	.probe = clk_debug_lito_probe,

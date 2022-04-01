@@ -19,10 +19,10 @@
 #include <dsp/q6common.h>
 #include <dsp/q6core.h>
 #include <dsp/msm-audio-event-notify.h>
-#ifdef CONFIG_ELLIPTIC_PROXIMITY
+#if IS_ENABLED(CONFIG_ELLIPTIC_PROXIMITY)
 #include <dsp/apr_elliptic.h>
 #endif
-#ifdef CONFIG_US_PROXIMITY
+#if IS_ENABLED(CONFIG_US_PROXIMITY)
 #include <dsp/apr_mius.h>
 #endif
 #include <ipc/apr_tal.h>
@@ -993,7 +993,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 			wake_up(&this_afe.wait[data->token]);
 		else
 			return -EINVAL;
-#ifdef CONFIG_US_PROXIMITY
+#if IS_ENABLED(CONFIG_US_PROXIMITY)
 	} else if (data->opcode == MI_ULTRASOUND_OPCODE) {
 		if (NULL != data->payload) {
 			printk(KERN_DEBUG "[MIUS] mi ultrasound afe afe cb");
@@ -1015,7 +1015,7 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 		atomic_set(&this_afe.clk_state, 0);
 		atomic_set(&this_afe.clk_status, 0);
 		wake_up(&this_afe.lpass_core_hw_wait);
-#ifdef CONFIG_ELLIPTIC_PROXIMITY
+#if IS_ENABLED(CONFIG_ELLIPTIC_PROXIMITY)
 	} else if (data->opcode == ULTRASOUND_OPCODE) {
 		if (NULL != data->payload)
 			elliptic_process_apr_payload(data->payload);
@@ -2470,7 +2470,7 @@ fail_idx:
 	return ret;
 }
 
-#ifdef CONFIG_ELLIPTIC_PROXIMITY
+#if IS_ENABLED(CONFIG_ELLIPTIC_PROXIMITY)
 afe_ultrasound_state_t elus_afe = {
 	.ptr_apr= &this_afe.apr,
 	.ptr_status= &this_afe.status,
@@ -2481,7 +2481,7 @@ afe_ultrasound_state_t elus_afe = {
 EXPORT_SYMBOL(elus_afe);
 #endif
 
-#ifdef CONFIG_US_PROXIMITY
+#if IS_ENABLED(CONFIG_US_PROXIMITY)
 afe_mi_ultrasound_state_t mius_afe = {
 	.ptr_apr = &this_afe.apr,
 	.ptr_status = &this_afe.status,

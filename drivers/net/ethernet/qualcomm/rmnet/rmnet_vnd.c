@@ -175,7 +175,7 @@ static u16 rmnet_vnd_select_queue(struct net_device *dev,
 	int boost_trigger = 0;
 	int txq = 0;
 
-	if (trace_print_skb_gso_enabled()) {
+	if (trace_print_rmnet_gso_enabled()) {
 		if (!skb_shinfo(skb)->gso_size)
 			goto skip_trace;
 
@@ -189,7 +189,7 @@ static u16 rmnet_vnd_select_queue(struct net_device *dev,
 				goto skip_trace;
 		}
 
-		trace_print_skb_gso(skb, tcp_hdr(skb)->source,
+		trace_print_rmnet_gso(skb, tcp_hdr(skb)->source,
 				    tcp_hdr(skb)->dest);
 	}
 

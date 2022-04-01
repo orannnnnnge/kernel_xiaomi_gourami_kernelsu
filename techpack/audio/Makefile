@@ -30,12 +30,12 @@ LINUXINCLUDE    += \
                 -I$(srctree)/techpack/audio/include/uapi \
                 -I$(srctree)/techpack/audio/include
 
-ifeq ($(CONFIG_ELLIPTIC_PROXIMITY), y)
+ifeq ($(CONFIG_ELLIPTIC_PROXIMITY), m)
 LINUXINCLUDE    += \
                 -I$(srctree)/techpack/audio/include/elliptic
 endif
 
-ifeq ($(CONFIG_US_PROXIMITY), y)
+ifeq ($(CONFIG_US_PROXIMITY), m)
 LINUXINCLUDE    += \
                 -I$(srctree)/techpack/audio/include/mius
 endif

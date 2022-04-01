@@ -906,6 +906,7 @@ static int pm8008_chip_probe(struct platform_device *pdev)
 		}
 	}
 
+	platform_set_drvdata(pdev, chip);
 	pr_debug("PM8008 chip registered\n");
 	return 0;
 }
@@ -938,7 +939,6 @@ static struct platform_driver pm8008_regulator_driver = {
 	},
 	.probe		= pm8008_regulator_probe,
 };
-module_platform_driver(pm8008_regulator_driver);
 
 static const struct of_device_id pm8008_chip_match_table[] = {
 	{
@@ -956,7 +956,25 @@ static struct platform_driver pm8008_chip_driver = {
 	.probe		= pm8008_chip_probe,
 	.remove		= pm8008_chip_remove,
 };
-module_platform_driver(pm8008_chip_driver);
+
+static int __init pm8008_regulator_init(void)
+{
+	int rc;
+
+	rc = platform_driver_register(&pm8008_chip_driver);
+	if (rc)
+		return rc;
+
+	return platform_driver_register(&pm8008_regulator_driver);
+}
+module_init(pm8008_regulator_init);
+
+static void __exit pm8008_regulator_exit(void)
+{
+	platform_driver_unregister(&pm8008_regulator_driver);
+	platform_driver_unregister(&pm8008_chip_driver);
+}
+module_exit(pm8008_regulator_exit);
 
 MODULE_DESCRIPTION("QPNP PM8008 PMIC Regulator Driver");
 MODULE_LICENSE("GPL v2");

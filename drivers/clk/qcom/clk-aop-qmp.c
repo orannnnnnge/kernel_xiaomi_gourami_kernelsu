@@ -9,6 +9,7 @@
 #include <linux/clk.h>
 #include <linux/err.h>
 #include <linux/kernel.h>
+#include <linux/module.h>
 #include <linux/of.h>
 #include <linux/of_device.h>
 #include <linux/mailbox_client.h>
@@ -214,7 +215,7 @@ static const struct clk_ops aop_qmp_clk_ops = {
 };
 
 DEFINE_CLK_AOP_QMP(qdss_qmp_clk, clock, qdss, QDSS_CLK_LEVEL_DYNAMIC,
-			QDSS_CLK_LEVEL_OFF, CLK_ENABLE_HAND_OFF);
+			QDSS_CLK_LEVEL_OFF, 0);
 DEFINE_CLK_AOP_QMP(qdss_ao_qmp_clk, clock, qdss_ao, QDSS_CLK_LEVEL_DYNAMIC,
 			QDSS_CLK_LEVEL_OFF, 0);
 DEFINE_CLK_AOP_QMP(bimc_qmp_clk, ddr, ddr_log, 1, 0, 0);
@@ -364,6 +365,11 @@ fail:
 	return ret;
 }
 
+static void aop_qmp_clk_sync_state(struct device *dev)
+{
+	clk_sync_state(dev);
+}
+
 static const struct of_device_id aop_qmp_clk_of_match[] = {
 	{ .compatible = "qcom,aop-qmp-clk", },
 	{}
@@ -373,6 +379,7 @@ static struct platform_driver aop_qmp_clk_driver = {
 	.driver = {
 		.name = "qmp-aop-clk",
 		.of_match_table = aop_qmp_clk_of_match,
+		.sync_state = aop_qmp_clk_sync_state,
 	},
 	.probe = aop_qmp_clk_probe,
 };
@@ -382,3 +389,6 @@ static int __init aop_qmp_clk_init(void)
 	return platform_driver_register(&aop_qmp_clk_driver);
 }
 subsys_initcall(aop_qmp_clk_init);
+
+MODULE_LICENSE("GPL v2");
+MODULE_DESCRIPTION("AOP QMP Clock Driver");

@@ -2399,8 +2399,10 @@ int regulator_enable(struct regulator *regulator)
 	mutex_lock(&rdev->mutex);
 
 	ret = _regulator_enable(rdev);
+#ifdef CONFIG_DEBUG_FS
 	if (ret == 0)
 		regulator->enabled++;
+#endif
 
 	mutex_unlock(&rdev->mutex);
 
@@ -2510,8 +2512,10 @@ int regulator_disable(struct regulator *regulator)
 
 	mutex_lock(&rdev->mutex);
 	ret = _regulator_disable(rdev);
+#ifdef CONFIG_DEBUG_FS
 	if (ret == 0)
 		regulator->enabled--;
+#endif
 	mutex_unlock(&rdev->mutex);
 
 	if (ret == 0 && rdev->supply)
@@ -3822,7 +3826,7 @@ EXPORT_SYMBOL_GPL(regulator_set_load);
 int regulator_allow_bypass(struct regulator *regulator, bool enable)
 {
 	struct regulator_dev *rdev = regulator->rdev;
-	int ret = 0;
+	int ret = 0, offset = 0;
 
 	if (!rdev->desc->ops->set_bypass)
 		return 0;
@@ -3832,11 +3836,15 @@ int regulator_allow_bypass(struct regulator *regulator, bool enable)
 
 	regulator_lock(rdev);
 
+#ifdef CONFIG_DEBUG_FS
+	offset = rdev->open_offset;
+#endif
+
 	if (enable && !regulator->bypass) {
 		rdev->bypass_count++;
 
 		if (rdev->bypass_count == rdev->open_count -
-		    rdev->open_offset) {
+		    offset) {
 			ret = rdev->desc->ops->set_bypass(rdev, enable);
 			if (ret != 0)
 				rdev->bypass_count--;
@@ -3846,7 +3854,7 @@ int regulator_allow_bypass(struct regulator *regulator, bool enable)
 		rdev->bypass_count--;
 
 		if (rdev->bypass_count != rdev->open_count -
-		    rdev->open_offset) {
+		    offset) {
 			ret = rdev->desc->ops->set_bypass(rdev, enable);
 			if (ret != 0)
 				rdev->bypass_count++;
@@ -4952,6 +4960,30 @@ void regulator_unregister(struct regulator_dev *rdev)
 }
 EXPORT_SYMBOL_GPL(regulator_unregister);
 
+static int regulator_sync_supply(struct device *dev, void *data)
+{
+	struct regulator_dev *rdev = dev_to_rdev(dev);
+
+	if (rdev->dev.parent != data)
+		return 0;
+
+	if (!rdev->proxy_consumer)
+		return 0;
+
+	dev_dbg(data, "Removing regulator proxy consumer requests\n");
+	regulator_proxy_consumer_unregister(rdev->proxy_consumer);
+	rdev->proxy_consumer = NULL;
+
+	return 0;
+}
+
+void regulator_sync_state(struct device *dev)
+{
+	class_for_each_device(&regulator_class, NULL, dev,
+			      regulator_sync_supply);
+}
+EXPORT_SYMBOL_GPL(regulator_sync_state);
+
 #ifdef CONFIG_SUSPEND
 static int _regulator_suspend(struct device *dev, void *data)
 {
@@ -5263,6 +5295,7 @@ static const struct file_operations regulator_summary_fops = {
 #endif
 };
 
+#ifdef CONFIG_DEBUG_FS
 static int _regulator_debug_print_enabled(struct device *dev, void *data)
 {
 	struct regulator_dev *rdev = dev_to_rdev(dev);
@@ -5327,6 +5360,7 @@ void regulator_debug_print_enabled(void)
 			     _regulator_debug_print_enabled);
 }
 EXPORT_SYMBOL(regulator_debug_print_enabled);
+#endif
 
 static int __init regulator_init(void)
 {

@@ -1,7 +1,7 @@
 source "drivers/clk/qcom/mdss/Kconfig"
 
 config QCOM_GDSC
-	bool
+	tristate
 	select PM_GENERIC_DOMAINS if PM
 
 config QCOM_RPMCC
@@ -13,6 +13,7 @@ config COMMON_CLK_QCOM
 	depends on ARCH_QCOM || COMPILE_TEST
 	select REGMAP_MMIO
 	select RESET_CONTROLLER
+	default y if ARCH_QCOM
 
 config QCOM_A53PLL
 	tristate "MSM8916 A53 PLL"
@@ -305,7 +306,6 @@ config MSM_VIDEOCC_KONA
 
 config MSM_DISPCC_KONA
 	tristate "KONA Display Clock Controller"
-	select SDM_GCC_KONA
 	depends on COMMON_CLK_QCOM
 	help
 	  Support for the display clock controller on Qualcomm Technologies, Inc
@@ -341,7 +341,6 @@ config MSM_DEBUGCC_KONA
 config MSM_NPUCC_KONA
 	tristate "KONA NPU Clock Controller"
 	depends on COMMON_CLK_QCOM
-	select MSM_GCC_KONA
 	help
 	  Support for the NPU clock controller on Qualcomm Technologies, Inc.
 	  KONA devices.

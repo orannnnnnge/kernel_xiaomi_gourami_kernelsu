@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #include <linux/dma-mapping.h>
@@ -147,7 +146,6 @@ static const struct mhi_device_id mhi_driver_match_table[] = {
 	{ .chan = "IP_HW_MHIP_0" }, /* for rndis/Wifi teth pipes */
 	{ .chan = "IP_HW_MHIP_1" }, /* for MHIP rmnet */
 	{ .chan = "IP_HW_ADPL" }, /* ADPL/ODL DL pipe */
-	{},
 };
 
 static const char *ipa_mpm_mhip_chan_str[IPA_MPM_MHIP_CH_ID_MAX] = {
@@ -3298,7 +3296,7 @@ static struct platform_driver ipa_ipa_mpm_driver = {
  *
  * Return: None
  */
-static int __init ipa_mpm_init(void)
+int __init ipa_mpm_init(void)
 {
 	IPA_MPM_DBG("register ipa_mpm platform device\n");
 	return platform_driver_register(&ipa_ipa_mpm_driver);
@@ -3572,6 +3570,8 @@ int ipa3_qmi_reg_dereg_for_bw(bool bw_reg, int bw_reg_dereg_type)
 	return true;
 }
 
+#ifndef CONFIG_IPA3_MODULE
 late_initcall(ipa_mpm_init);
+#endif
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MHI Proxy Manager Driver");

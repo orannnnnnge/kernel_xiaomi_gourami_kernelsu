@@ -6,12 +6,17 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/platform_device.h>
+#include <linux/highmem.h>
+
+#include <mm/slab.h>
+
 #include <media/v4l2-fh.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-ioctl.h>
 #include <media/cam_req_mgr.h>
 #include <media/cam_defs.h>
+
 #include "cam_req_mgr_dev.h"
 #include "cam_req_mgr_util.h"
 #include "cam_req_mgr_core.h"
@@ -19,7 +24,6 @@
 #include "cam_mem_mgr.h"
 #include "cam_debug_util.h"
 #include "cam_common_util.h"
-#include <linux/slub_def.h>
 
 #define CAM_REQ_MGR_EVENT_MAX 60
 
@@ -583,6 +587,18 @@ int cam_req_mgr_notify_message(struct cam_req_mgr_message *msg,
 	if (!msg)
 		return -EINVAL;
 
+	if (id == V4L_EVENT_CAM_REQ_MGR_SOF) {
+		CAM_DBG(CAM_CRM,
+			"request id:%lld frame number:%lld SOF time stamp:0x%llx",
+			msg->u.frame_msg.request_id, msg->u.frame_msg.frame_id,
+			msg->u.frame_msg.timestamp);
+	} else if (id == V4L_EVENT_CAM_REQ_MGR_SOF_BOOT_TS) {
+		CAM_DBG(CAM_CRM,
+			"request id:%lld frame number:%lld boot time stamp:0x%llx",
+			msg->u.frame_msg.request_id, msg->u.frame_msg.frame_id,
+			msg->u.frame_msg.timestamp);
+	}
+
 	event.id = id;
 	event.type = type;
 	ev_header = CAM_REQ_MGR_GET_PAYLOAD_PTR(event,
@@ -754,7 +770,7 @@ static const struct of_device_id cam_req_mgr_dt_match[] = {
 	{.compatible = "qcom,cam-req-mgr"},
 	{}
 };
-MODULE_DEVICE_TABLE(of, cam_dt_match);
+MODULE_DEVICE_TABLE(of, cam_req_mgr_dt_match);
 
 static struct platform_driver cam_req_mgr_driver = {
 	.probe = cam_req_mgr_probe,

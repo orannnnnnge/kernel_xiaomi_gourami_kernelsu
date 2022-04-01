@@ -94,6 +94,9 @@ config SRF08
 	  To compile this driver as a module, choose M here: the
 	  module will be called srf08.
 
+config ELLIPTIC_PROXIMITY
+        tristate "elliptic labs ultrasound proximity sensor"
+
 config US_PROXIMITY
 	tristate "xiaomi ultrasound proximity sensor"
 	select IIO_BUFFER

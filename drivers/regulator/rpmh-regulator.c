@@ -1677,7 +1677,8 @@ static int rpmh_regulator_init_vreg_supply(struct rpmh_vreg *vreg)
 		return -ENOMEM;
 	scnprintf(buf, len, "%s-parent-supply", vreg->rdesc.name);
 
-	if (of_find_property(vreg->aggr_vreg->dev->of_node, buf, NULL)) {
+	if (of_find_property(vreg->of_node, buf, NULL) ||
+	    of_find_property(vreg->aggr_vreg->dev->of_node, buf, NULL)) {
 		kfree(buf);
 
 		len = strlen(vreg->rdesc.name) + 10;
@@ -1990,6 +1991,7 @@ static struct platform_driver rpmh_regulator_driver = {
 	.driver = {
 		.name		= "qcom,rpmh-regulator",
 		.of_match_table	= rpmh_regulator_match_table,
+		.sync_state = regulator_sync_state,
 	},
 	.probe = rpmh_regulator_probe,
 };

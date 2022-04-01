@@ -57,16 +57,9 @@ struct msm_pcie_register_event {
 	u32 options;
 };
 
-#ifdef CONFIG_PCI_MSM_MSI
 int msm_msi_init(struct device *dev);
-#else
-static inline int msm_msi_init(struct device *dev)
-{
-	return -EINVAL;
-}
-#endif
 
-#ifdef CONFIG_PCI_MSM
+#if IS_ENABLED(CONFIG_PCI_MSM)
 
 /**
  * msm_pcie_set_target_link_speed - sets the maximum GEN speed PCIe can link up

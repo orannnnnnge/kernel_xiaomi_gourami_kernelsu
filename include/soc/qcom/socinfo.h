@@ -58,10 +58,20 @@
 	of_machine_is_compatible("qcom,kona")
 #define early_machine_is_lito()	\
 	of_machine_is_compatible("qcom,lito")
+#define early_machine_is_orchid()	\
+	of_machine_is_compatible("qcom,orchid")
 #define early_machine_is_bengal()	\
 	of_machine_is_compatible("qcom,bengal")
+#define early_machine_is_bengalp()	\
+	of_machine_is_compatible("qcom,bengalp")
 #define early_machine_is_lagoon()	\
 	of_machine_is_compatible("qcom,lagoon")
+#define early_machine_is_scuba()	\
+	of_machine_is_compatible("qcom,scuba")
+#define early_machine_is_scubaiot()	\
+	of_machine_is_compatible("qcom,scuba-iot")
+#define early_machine_is_scubapiot()	\
+	of_machine_is_compatible("qcom,scubap-iot")
 #define early_machine_is_sdmshrike()	\
 	of_machine_is_compatible("qcom,sdmshrike")
 #define early_machine_is_sm6150()	\
@@ -78,20 +88,22 @@
 	of_machine_is_compatible("qcom,bengal-iot")
 #define early_machine_is_bengalp_iot()	\
 	of_machine_is_compatible("qcom,bengalp-iot")
-#define early_machine_is_msm8937()	\
-	of_machine_is_compatible("qcom,msm8937")
-#define early_machine_is_msm8917()	\
-	of_machine_is_compatible("qcom,msm8917")
-#define early_machine_is_sdm439()	\
-	of_machine_is_compatible("qcom,sdm439")
-#define early_machine_is_sdm429()	\
-	of_machine_is_compatible("qcom,sdm429")
-#define early_machine_is_qm215()	\
-	of_machine_is_compatible("qcom,qm215")
+#define early_machine_is_khaje()	\
+	of_machine_is_compatible("qcom,khaje")
+#define early_machine_is_msm8937()      \
+        of_machine_is_compatible("qcom,msm8937")
+#define early_machine_is_msm8917()      \
+        of_machine_is_compatible("qcom,msm8917")
+#define early_machine_is_sdm439()       \
+        of_machine_is_compatible("qcom,sdm439")
+#define early_machine_is_sdm429()       \
+        of_machine_is_compatible("qcom,sdm429")
+#define early_machine_is_qm215()        \
+        of_machine_is_compatible("qcom,qm215")
 #define early_machine_is_msm8953()	\
-	of_machine_is_compatible("qcom,msm8953")
+        of_machine_is_compatible("qcom,msm8953")
 #define early_machine_is_sdm450()	\
-	of_machine_is_compatible("qcom,sdm450")
+        of_machine_is_compatible("qcom,sdm450")
 #else
 #define early_machine_is_msm8916()	\
 	of_flat_dt_is_compatible(of_get_flat_dt_root(), "qcom,msm8916")

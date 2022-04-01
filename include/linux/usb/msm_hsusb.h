@@ -328,7 +328,7 @@ struct ci13xxx_platform_data {
 	bool enable_axi_prefetch;
 };
 
-#ifdef CONFIG_USB_BAM
+#if IS_ENABLED(CONFIG_USB_BAM)
 void msm_bam_set_usb_host_dev(struct device *dev);
 int msm_do_bam_disable_enable(enum usb_ctrl ctrl);
 #else

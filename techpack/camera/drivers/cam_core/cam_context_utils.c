@@ -1025,6 +1025,7 @@ int32_t cam_context_dump_pf_info_to_hw(struct cam_context *ctx,
 end:
 	return rc;
 }
+EXPORT_SYMBOL_GPL(cam_context_dump_pf_info_to_hw);
 
 int32_t cam_context_dump_hw_acq_info(struct cam_context *ctx)
 {

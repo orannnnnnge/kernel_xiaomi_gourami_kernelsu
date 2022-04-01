@@ -747,6 +747,7 @@ config REGULATOR_QPNP_LABIBB
 config REGULATOR_QPNP_LCDB
         tristate "Qualcomm Technologies, Inc. QPNP LCDB support"
         depends on SPMI
+	depends on QPNP_REVID
         help
           Supports the LCDB module in the Qualcomm Technologies, Inc.
           QPNP PMICs. Exposes regulators to control the positive and
@@ -1170,7 +1171,7 @@ config REGULATOR_STUB
 	  checking while the real regulator driver is being developed.
 
 config REGULATOR_PM8008
-	bool "Qualcomm Technologies Inc. PM8008 regulator driver"
+	tristate "Qualcomm Technologies Inc. PM8008 regulator driver"
 	depends on MFD_I2C_PMIC
 	help
 	  Say Y here to support the PM8008 PMIC chip.

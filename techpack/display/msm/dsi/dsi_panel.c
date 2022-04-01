@@ -623,6 +623,106 @@ error:
 	return rc;
 }
 
+
+static u32 dsi_panel_get_backlight(struct dsi_panel *panel)
+{
+	return panel->bl_config.bl_actual;
+}
+
+static u32 interpolate(u32 x, u32 xa, u32 xb, u32 ya, u32 yb)
+{
+	return ya - (ya - yb) * (x - xa) / (xb - xa);
+}
+
+
+u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel)
+{
+	u32 brightness = dsi_panel_get_backlight(panel);
+	int i, alpha;
+
+	if (!panel->fod_dim_lut)
+		alpha = 0;
+
+	for (i = 0; i < panel->fod_dim_lut_count; i++)
+		if (panel->fod_dim_lut[i].brightness >= brightness)
+			break;
+
+	if (i == 0)
+		alpha = panel->fod_dim_lut[0].alpha;
+
+	else if (i == panel->fod_dim_lut_count)
+		alpha = panel->fod_dim_lut[brightness - 1].alpha;
+	else
+		alpha = interpolate(brightness,
+				panel->fod_dim_lut[i - 1].brightness,
+				panel->fod_dim_lut[i].brightness,
+				panel->fod_dim_lut[i - 1].alpha,
+				panel->fod_dim_lut[i].alpha);
+	return alpha;
+}
+
+int dsi_panel_parse_fod_dim_lut(struct dsi_panel *panel,
+		struct dsi_parser_utils *utils)
+{
+	struct brightness_alpha_pair *lut;
+	u32 *array;
+	int count;
+	int len;
+	int rc;
+	int i;
+
+	len = utils->count_u32_elems(utils->data, "mi,mdss-dsi-dimlayer-brightness-alpha-lut");
+	if (len <= 0 || len % BRIGHTNESS_ALPHA_PAIR_LEN) {
+		DSI_ERR("[%s] invalid number of elements, rc=%d\n",
+				panel->name, rc);
+		rc = -EINVAL;
+		goto count_fail;
+	}
+
+	array = kcalloc(len, sizeof(u32), GFP_KERNEL);
+	if (!array) {
+		DSI_ERR("[%s] failed to allocate memory, rc=%d\n",
+				panel->name, rc);
+		rc = -ENOMEM;
+		goto alloc_array_fail;
+	}
+
+	rc = utils->read_u32_array(utils->data,
+			"mi,mdss-dsi-dimlayer-brightness-alpha-lut", array, len);
+	if (rc) {
+		DSI_ERR("[%s] failed to allocate memory, rc=%d\n",
+				panel->name, rc);
+		goto read_fail;
+	}
+
+	count = len / BRIGHTNESS_ALPHA_PAIR_LEN;
+	lut = kcalloc(count, sizeof(*lut), GFP_KERNEL);
+	if (!lut) {
+		rc = -ENOMEM;
+		goto alloc_lut_fail;
+	}
+
+	for (i = 0; i < count; i++) {
+		struct brightness_alpha_pair *pair = &lut[i];
+		pair->brightness = array[i * BRIGHTNESS_ALPHA_PAIR_LEN + 0];
+		pair->alpha = array[i * BRIGHTNESS_ALPHA_PAIR_LEN + 1];
+	}
+
+	panel->fod_dim_lut = lut;
+	panel->fod_dim_lut_count = count;
+
+alloc_lut_fail:
+read_fail:
+	kfree(array);
+alloc_array_fail:
+count_fail:
+	if (rc) {
+		panel->fod_dim_lut = NULL;
+		panel->fod_dim_lut_count = 0;
+	}
+	return rc;
+}
+
 static int dsi_panel_parse_timing(struct dsi_mode_info *mode,
 				  struct dsi_parser_utils *utils)
 {
@@ -5208,7 +5308,7 @@ int dsi_panel_enable(struct dsi_panel *panel)
 	mutex_unlock(&panel->panel_lock);
 
 	if (panel->fod_hbm_mode)
-		dsi_panel_apply_fod_hbm_mode(panel);
+		dsi_panel_apply_fod_hbm_mode(panel, panel->fod_hbm_mode);
 
 	if (!rc)
 		rc = dsi_backlight_late_dpms(&panel->bl_config,
@@ -5386,7 +5486,7 @@ int dsi_panel_wakeup(struct dsi_panel *panel)
 	return 0;
 }
 
-int dsi_panel_apply_fod_hbm_mode(struct dsi_panel *panel)
+int dsi_panel_apply_fod_hbm_mode(struct dsi_panel *panel, bool status)
 {
 	static const enum dsi_cmd_set_type type_map[] = {
 		DSI_CMD_SET_DISP_HBM_FOD_OFF,
@@ -5396,9 +5496,9 @@ int dsi_panel_apply_fod_hbm_mode(struct dsi_panel *panel)
 	enum dsi_cmd_set_type type;
 	int rc;
 
-	if (panel->hbm_mode >= 0 &&
-		panel->hbm_mode < ARRAY_SIZE(type_map))
-		type = type_map[panel->fod_hbm_mode];
+	if (status >= 0 &&
+		status < ARRAY_SIZE(type_map))
+		type = type_map[status];
 	else
 		type = DSI_CMD_SET_DISP_HBM_FOD_OFF;
 

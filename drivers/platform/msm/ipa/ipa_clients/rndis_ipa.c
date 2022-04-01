@@ -56,7 +56,7 @@
 
 #define IPA_RNDIS_IPC_LOG_PAGES 50
 
-#ifdef CONFIG_IPA_IPC_LOGGING
+#ifdef CONFIG_ENABLE_IPC_LOGGING
 #define IPA_RNDIS_IPC_LOGGING(buf, fmt, args...) \
 	do { \
 		if (buf) \
@@ -65,7 +65,7 @@
 	} while (0)
 #else
 #define IPA_RNDIS_IPC_LOGGING(buf, fmt, args...)
-#endif /* CONFIG_IPA_IPC_LOGGING */
+#endif /* CONFIG_ENABLE_IPC_LOGGING */
 
 static void *ipa_rndis_logbuf;
 
@@ -302,8 +302,6 @@ static enum rndis_ipa_state rndis_ipa_next_state
 	(enum rndis_ipa_state current_state,
 	enum rndis_ipa_operation operation);
 static const char *rndis_ipa_state_string(enum rndis_ipa_state state);
-static int rndis_ipa_init_module(void);
-static void rndis_ipa_cleanup_module(void);
 
 struct rndis_ipa_dev *rndis_ipa;
 
@@ -2705,7 +2703,7 @@ static ssize_t rndis_ipa_debugfs_atomic_read
 	return simple_read_from_buffer(ubuf, count, ppos, atomic_str, nbytes);
 }
 
-static int rndis_ipa_init_module(void)
+int __init rndis_ipa_init_module(void)
 {
 	ipa_rndis_logbuf = ipc_log_context_create(IPA_RNDIS_IPC_LOG_PAGES,
 		"ipa_rndis", 0);
@@ -2716,7 +2714,7 @@ static int rndis_ipa_init_module(void)
 	return 0;
 }
 
-static void rndis_ipa_cleanup_module(void)
+void __exit rndis_ipa_cleanup_module(void)
 {
 	if (ipa_rndis_logbuf)
 		ipc_log_context_destroy(ipa_rndis_logbuf);
@@ -2728,5 +2726,7 @@ static void rndis_ipa_cleanup_module(void)
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("RNDIS_IPA network interface");
 
+#ifndef CONFIG_IPA3_MODULE
 late_initcall(rndis_ipa_init_module);
 module_exit(rndis_ipa_cleanup_module);
+#endif

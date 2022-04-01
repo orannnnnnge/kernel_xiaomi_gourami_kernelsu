@@ -2523,6 +2523,23 @@ static int cs35l41_dai_set_sysclk(struct snd_soc_dai *dai,
 	return 0;
 }
 
+static int cs35l41_digital_mute(struct snd_soc_dai *dai, int mute)
+{
+	struct cs35l41_private *cs35l41 =
+				  snd_soc_component_get_drvdata(dai->component);
+
+	if (mute) {
+		regmap_update_bits(cs35l41->regmap, 0x6000,
+				0x7ff << 3, 0x400 << 3 | 0x7);
+		mdelay(30); // Avoid pop noise
+	} else {
+		regmap_update_bits(cs35l41->regmap, 0x6000,
+				0x7ff << 3, 0x0 << 3 | 0x4 );
+	}
+
+	return 0;
+}
+
 static int cs35l41_boost_config(struct cs35l41_private *cs35l41,
 		int boost_ind, int boost_cap, int boost_ipk)
 {
@@ -2914,6 +2931,7 @@ static const struct snd_soc_dai_ops cs35l41_ops = {
 	.set_fmt = cs35l41_set_dai_fmt,
 	.hw_params = cs35l41_pcm_hw_params,
 	.set_sysclk = cs35l41_dai_set_sysclk,
+	.digital_mute = cs35l41_digital_mute,
 };
 
 static struct snd_soc_dai_driver cs35l41_dai[] = {

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.*/
+/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.*/
 
 #include <linux/interrupt.h>
 #include <linux/iommu.h>
@@ -11,9 +11,6 @@
 #include <linux/of_irq.h>
 #include <linux/of_pci.h>
 #include <linux/pci.h>
-#include <linux/wakeup_reason.h>
-
-extern int gic_resume_irq;
 
 struct msm_msi_irq {
 	unsigned int hwirq; /* MSI controller hwirq */
@@ -42,8 +39,6 @@ struct msm_msi_client {
 	dma_addr_t msi_addr;
 };
 
-int resume_mhi_log_print = 0;
-
 static void msm_msi_handler(struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
@@ -54,16 +49,6 @@ static void msm_msi_handler(struct irq_desc *desc)
 
 	msi = irq_desc_get_handler_data(desc);
 	virq = irq_find_mapping(msi->inner_domain, irq_desc_get_irq(desc));
-
-	if (gic_resume_irq) {
-		if(irq_desc_get_irq(desc) == gic_resume_irq) {
-			log_irq_wakeup_reason(virq);
-			resume_mhi_log_print = 1;
-		}
-		gic_resume_irq = 0;
-	} else {
-		resume_mhi_log_print = 0;
-	}
 
 	generic_handle_irq(virq);
 
@@ -336,6 +321,7 @@ int msm_msi_init(struct device *dev)
 	struct msm_msi *msi;
 	struct device_node *of_node;
 	const __be32 *prop_val;
+	struct of_phandle_args irq;
 
 	if (!dev->of_node) {
 		dev_err(dev, "MSI: missing DT node\n");
@@ -377,7 +363,9 @@ int msm_msi_init(struct device *dev)
 		return -EINVAL;
 	}
 
-	msi->nr_irqs = of_irq_count(msi->of_node);
+	while (of_irq_parse_one(msi->of_node, msi->nr_irqs, &irq) == 0)
+		msi->nr_irqs++;
+
 	if (!msi->nr_irqs) {
 		dev_err(msi->dev, "MSI: found no MSI interrupts\n");
 		return -ENODEV;

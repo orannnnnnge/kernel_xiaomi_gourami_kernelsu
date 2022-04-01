@@ -174,6 +174,7 @@ void mhi_set_mhi_state(struct mhi_controller *mhi_cntrl,
 				(state << MHICTRL_MHISTATE_SHIFT));
 	}
 }
+EXPORT_SYMBOL_GPL(mhi_set_mhi_state);
 
 /* nop for backward compatibility, allowed to ring db registers in M2 state */
 static void mhi_toggle_dev_wake_nop(struct mhi_controller *mhi_cntrl)
@@ -1477,6 +1478,7 @@ int mhi_pm_resume(struct mhi_controller *mhi_cntrl)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mhi_pm_resume);
 
 int mhi_pm_fast_resume(struct mhi_controller *mhi_cntrl, bool notify_client)
 {
@@ -1602,6 +1604,7 @@ exit_pm_fast_resume:
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(mhi_pm_fast_resume);
 
 int __mhi_device_get_sync(struct mhi_controller *mhi_cntrl)
 {

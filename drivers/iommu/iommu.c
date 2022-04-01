@@ -31,7 +31,6 @@
 #include <linux/err.h>
 #include <linux/pci.h>
 #include <linux/bitops.h>
-#include <linux/debugfs.h>
 #include <linux/property.h>
 #include <trace/events/iommu.h>
 #ifdef CONFIG_MSM_TZ_SMMU
@@ -1561,12 +1560,12 @@ phys_addr_t iommu_iova_to_phys(struct iommu_domain *domain, dma_addr_t iova)
 EXPORT_SYMBOL_GPL(iommu_iova_to_phys);
 
 phys_addr_t iommu_iova_to_phys_hard(struct iommu_domain *domain,
-				    dma_addr_t iova, unsigned long trans_flags)
+				    dma_addr_t iova)
 {
 	if (unlikely(domain->ops->iova_to_phys_hard == NULL))
 		return 0;
 
-	return domain->ops->iova_to_phys_hard(domain, iova, trans_flags);
+	return domain->ops->iova_to_phys_hard(domain, iova);
 }
 
 uint64_t iommu_iova_to_pte(struct iommu_domain *domain,

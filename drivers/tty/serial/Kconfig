@@ -737,7 +737,7 @@ config SERIAL_HS_LPC32XX_CONSOLE
 	  Y to this option.
 
 config SERIAL_CORE
-	tristate
+	bool
 
 config SERIAL_CORE_CONSOLE
 	bool
@@ -999,6 +999,12 @@ config SERIAL_MSM_GENI
 	    hardware.
 	    The driver supports console and High speed UART functions.
 
+config SERIAL_MSM_GENI_CONSOLE
+        bool "MSM on-chip GENI HW based console support"
+        depends on SERIAL_MSM_GENI
+        select SERIAL_CORE_CONSOLE
+        select SERIAL_EARLYCON
+
 config SERIAL_MSM_GENI_HALF_SAMPLING
 	bool "Changes clock divider which impacts sampling rate for QUP HW ver greater than 2.5.0"
 	help
@@ -1013,12 +1019,6 @@ config SERIAL_MSM_GENI_EARLY_CONSOLE
 	help
 	  Serial early console driver for Qualcomm Technologies Inc's GENI
 	  based QUP hardware.
-
-config SERIAL_MSM_GENI_CONSOLE
-	tristate "MSM on-chip GENI HW based console support"
-	depends on SERIAL_MSM_GENI=y
-	select SERIAL_CORE_CONSOLE
-	select SERIAL_EARLYCON
 
 config SERIAL_MSM_GENI_HALF_SAMPLING
 	bool "Changes clock divider which impacts sampling rate for QUP HW ver greater than 2.5.0"

@@ -279,7 +279,7 @@ config VMD
 	  module will be called vmd.
 
 config PCI_MSM
-	bool "MSM PCIe Controller driver"
+	tristate "MSM PCIe Controller driver"
 	depends on ARCH_QCOM && PCI
 	select PCI_DOMAINS
 	select PCI_DOMAINS_GENERIC
@@ -292,16 +292,6 @@ config PCI_MSM
 	  and an endpoint.
 
 	  If unsure, say N.
-
-config PCI_MSM_MSI
-	bool "MSM PCIe MSI support"
-	depends on PCI_MSM
-	depends on PCI_MSI_IRQ_DOMAIN
-	help
-	  Say Y here if you want to enable MSI support for PCIe
-	  controller and its devices. This controller offers
-	  message signaled interrupts (MSI) allocation, routing,
-	  masking, and affinity assigning for PCIe devices.
 
 source "drivers/pci/controller/dwc/Kconfig"
 endmenu

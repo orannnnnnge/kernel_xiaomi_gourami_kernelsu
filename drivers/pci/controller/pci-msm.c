@@ -4985,11 +4985,9 @@ int msm_pcie_enumerate(u32 rc_idx)
 		goto out;
 	}
 
-	if (IS_ENABLED(CONFIG_PCI_MSM_MSI)) {
-		ret = msm_msi_init(&dev->pdev->dev);
-		if (ret)
-			goto out;
-	}
+	ret = msm_msi_init(&dev->pdev->dev);
+	if (ret)
+		goto out;
 
 	list_splice_init(&res, &bridge->windows);
 	bridge->dev.parent = &dev->pdev->dev;
@@ -8075,3 +8073,6 @@ int msm_pcie_shadow_control(struct pci_dev *dev, bool enable)
 	return ret;
 }
 EXPORT_SYMBOL(msm_pcie_shadow_control);
+
+MODULE_DESCRIPTION("Qualcomm Technologies, Inc. PCIe RC driver");
+MODULE_LICENSE("GPL v2");

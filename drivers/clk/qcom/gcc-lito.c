@@ -2671,10 +2671,16 @@ static int gcc_lito_probe(struct platform_device *pdev)
 		return PTR_ERR(vdd_cx_ao.regulator[0]);
 	}
 
+	vdd_cx.skip_handoff = true;
+	clk_vote_vdd_level(&vdd_cx, vdd_cx.num_levels - 1);
+
+	vdd_cx_ao.skip_handoff = true;
+	clk_vote_vdd_level(&vdd_cx_ao, vdd_cx_ao.num_levels - 1);
+
 	ret = qcom_cc_register_rcg_dfs(regmap, gcc_dfs_clocks,
 			ARRAY_SIZE(gcc_dfs_clocks));
 	if (ret)
-		return ret;
+		goto error;
 
 	/* Disable the GPLL0 active input to NPU and GPU via MISC registers */
 	regmap_update_bits(regmap, GCC_NPU_MISC, 0x3, 0x3);
@@ -2682,13 +2688,23 @@ static int gcc_lito_probe(struct platform_device *pdev)
 
 
 	ret = qcom_cc_really_probe(pdev, &gcc_lito_desc, regmap);
+error:
 	if (ret) {
+		clk_unvote_vdd_level(&vdd_cx_ao, vdd_cx_ao.num_levels - 1);
+		clk_unvote_vdd_level(&vdd_cx, vdd_cx.num_levels - 1);
 		dev_err(&pdev->dev, "Failed to register GCC clocks\n");
-		return ret;
+	} else {
+		dev_info(&pdev->dev, "Registered GCC clocks\n");
 	}
 
-	dev_info(&pdev->dev, "Registered GCC clocks\n");
 	return ret;
+}
+
+static void gcc_lito_sync_state(struct device *dev)
+{
+	clk_sync_state(dev);
+	clk_unvote_vdd_level(&vdd_cx, vdd_cx.num_levels - 1);
+	clk_unvote_vdd_level(&vdd_cx_ao, vdd_cx_ao.num_levels - 1);
 }
 
 static struct platform_driver gcc_lito_driver = {
@@ -2696,6 +2712,7 @@ static struct platform_driver gcc_lito_driver = {
 	.driver	= {
 		.name = "gcc-lito",
 		.of_match_table = gcc_lito_match_table,
+		.sync_state = gcc_lito_sync_state,
 	},
 };
 

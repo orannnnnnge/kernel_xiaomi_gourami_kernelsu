@@ -506,7 +506,7 @@ static struct clk_branch npu_cc_bto_core_clk = {
 				"npu_cc_xo_clk_src",
 			},
 			.num_parents = 1,
-			.flags = CLK_SET_RATE_PARENT,
+			.flags = CLK_SET_RATE_PARENT | CLK_DONT_HOLD_STATE,
 			.ops = &clk_branch2_ops,
 		},
 	},
@@ -1263,31 +1263,43 @@ static int npu_cc_kona_probe(struct platform_device *pdev)
 				ret);
 		return ret;
 	}
+	vdd_cx.skip_handoff = true;
+	clk_vote_vdd_level(&vdd_cx, vdd_cx.num_levels - 1);
 
 	ret = npu_clocks_kona_probe(pdev, &npu_cc_kona_desc);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "npu_cc clock registration failed, ret=%d\n",
 			ret);
-		return ret;
+		goto error;
 	}
 
 	ret = npu_clocks_kona_probe(pdev, &npu_qdsp6ss_kona_desc);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "npu_qdsp6ss clock registration failed, ret=%d\n",
 			ret);
-		return ret;
+		goto error;
 	}
 
 	ret = npu_clocks_kona_probe(pdev, &npu_qdsp6ss_pll_kona_desc);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "npu_qdsp6ss_pll clock registration failed, ret=%d\n",
 			ret);
-		return ret;
+		goto error;
 	}
 
-	dev_info(&pdev->dev, "Registered NPU_CC clocks\n");
+error:
+	if (ret)
+		clk_unvote_vdd_level(&vdd_cx, vdd_cx.num_levels - 1);
+	else
+		dev_info(&pdev->dev, "Registered NPU_CC clocks\n");
 
-	return 0;
+	return ret;
+}
+
+static void npucc_kona_sync_state(struct device *dev)
+{
+	clk_sync_state(dev);
+	clk_unvote_vdd_level(&vdd_cx, vdd_cx.num_levels - 1);
 }
 
 static struct platform_driver npu_cc_kona_driver = {
@@ -1295,6 +1307,7 @@ static struct platform_driver npu_cc_kona_driver = {
 	.driver = {
 		.name = "npu_cc-kona",
 		.of_match_table = npu_cc_kona_match_table,
+		.sync_state = npucc_kona_sync_state,
 	},
 };
 

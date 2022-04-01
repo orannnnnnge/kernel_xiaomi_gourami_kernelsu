@@ -1720,7 +1720,7 @@ static int __cam_req_mgr_process_sof_freeze(void *priv, void *data)
 	memset(&msg, 0, sizeof(msg));
 
 	msg.session_hdl = session->session_hdl;
-	msg.u.err_msg.error_type = CAM_REQ_MGR_ERROR_TYPE_SOF_FREEZE;
+	msg.u.err_msg.error_type = CAM_REQ_MGR_ERROR_TYPE_DEVICE;
 	msg.u.err_msg.request_id = 0;
 	msg.u.err_msg.link_hdl   = link->link_hdl;
 
@@ -3449,7 +3449,8 @@ static void __cam_req_mgr_set_master_link(
 	if (link1->max_delay > link2->max_delay) {
 		link1->is_master = true;
 		link2->initial_skip = true;
-	} else if (link2->max_delay > link1->max_delay) {
+	} else {
+		/* when link1 delay <= link2 delay choose link2 */
 		link2->is_master = true;
 		link1->initial_skip = true;
 	}

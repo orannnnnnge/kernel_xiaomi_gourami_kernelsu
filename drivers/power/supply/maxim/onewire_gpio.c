@@ -255,7 +255,7 @@ ow_gpio_err_pinctrl_lookup:
 }
 
 // read data from file
-static ssize_t onewire_gpio_ow_gpio_status_read(struct device *dev,
+static ssize_t ow_gpio_show(struct device *dev,
 struct device_attribute *attr, char *buf)
 {
 	int status;
@@ -267,7 +267,7 @@ struct device_attribute *attr, char *buf)
 }
 
 // write data to file
-static ssize_t onewire_gpio_ow_gpio_store(struct device *dev,
+static ssize_t ow_gpio_store(struct device *dev,
 struct device_attribute *attr,
 const char *buf, size_t count)
 {
@@ -378,9 +378,7 @@ const char *buf, size_t count)
 	return count;
 }
 
-static DEVICE_ATTR(ow_gpio, S_IRUGO | S_IWUSR | S_IWGRP,
-		onewire_gpio_ow_gpio_status_read,
-		onewire_gpio_ow_gpio_store);
+static DEVICE_ATTR_RW(ow_gpio);
 
 static int onewire_gpio_probe(struct platform_device *pdev)
 {

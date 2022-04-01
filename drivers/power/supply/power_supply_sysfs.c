@@ -545,22 +545,6 @@ static struct device_attribute power_supply_attrs[] = {
 	POWER_SUPPLY_ATTR(page1_data),
 	POWER_SUPPLY_ATTR(verify_model_name),
 #endif
-#ifdef CONFIG_BQ2597X_CHARGE_PUMP
-	/* Bq charge pump properties */
- 	POWER_SUPPLY_ATTR(ti_battery_present),
-	POWER_SUPPLY_ATTR(ti_vbus_present),
-	POWER_SUPPLY_ATTR(ti_battery_voltage),
-	POWER_SUPPLY_ATTR(ti_battery_current),
-	POWER_SUPPLY_ATTR(ti_battery_temperature),
-	POWER_SUPPLY_ATTR(ti_bus_voltage),
-	POWER_SUPPLY_ATTR(ti_bus_current),
-	POWER_SUPPLY_ATTR(ti_bus_temperature),
-	POWER_SUPPLY_ATTR(ti_die_temperature),
-	POWER_SUPPLY_ATTR(ti_alarm_status),
-	POWER_SUPPLY_ATTR(ti_fault_status),
-	POWER_SUPPLY_ATTR(ti_reg_status),
-	POWER_SUPPLY_ATTR(ti_error_status),
-#endif
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	POWER_SUPPLY_ATTR(charge_charger_state),

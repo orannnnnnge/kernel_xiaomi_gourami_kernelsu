@@ -1005,6 +1005,7 @@ static long ioctl_get_last_read_error(struct mount_info *mi, void __user *arg)
 	args.time_us_out = mi->mi_le_time_us;
 	args.page_out = mi->mi_le_page;
 	args.errno_out = mi->mi_le_errno;
+	args.uid_out = mi->mi_le_uid;
 
 	mutex_unlock(&mi->mi_le_mutex);
 	if (copy_to_user(args_usr_ptr, &args, sizeof(args)) > 0)
@@ -1105,15 +1106,15 @@ static ssize_t log_read(struct file *f, char __user *buf, size_t len,
 			min_t(ssize_t, reads_to_collect, reads_per_page));
 		if (reads_collected <= 0) {
 			result = total_reads_collected ?
-					total_reads_collected * record_size :
-					reads_collected;
+				       total_reads_collected * record_size :
+				       reads_collected;
 			goto out;
 		}
 		if (copy_to_user(buf, (void *)page,
 				 reads_collected * record_size)) {
 			result = total_reads_collected ?
-					total_reads_collected * record_size :
-					-EFAULT;
+				       total_reads_collected * record_size :
+				       -EFAULT;
 			goto out;
 		}
 

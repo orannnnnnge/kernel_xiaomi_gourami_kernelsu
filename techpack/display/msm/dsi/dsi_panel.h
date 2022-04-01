@@ -322,6 +322,12 @@ struct drm_panel_esd_config {
 	u32 groups;
 };
 
+#define BRIGHTNESS_ALPHA_PAIR_LEN 2
+struct brightness_alpha_pair {
+	u32 brightness;
+	u32 alpha;
+};
+
 struct dsi_panel_sn_location {
 	u32 start_byte;
 	u32 sn_length;
@@ -430,6 +436,9 @@ struct dsi_panel {
 	struct delayed_work hanghandler_work;
 
 	int fod_hbm_mode;
+
+	struct brightness_alpha_pair *fod_dim_lut;
+	u32 fod_dim_lut_count;
 };
 
 /**
@@ -639,6 +648,10 @@ ssize_t parse_byte_buf(u8 *out, size_t out_len, char *src, size_t src_len);
 int parse_u32_buf(char *src, size_t src_len, u32 *out, size_t out_len);
 const struct dsi_display_mode *get_panel_display_mode(struct dsi_panel *panel);
 
-int dsi_panel_apply_fod_hbm_mode(struct dsi_panel *panel);
+int dsi_panel_apply_fod_hbm_mode(struct dsi_panel *panel, bool status);
+
+u32 dsi_panel_get_fod_dim_alpha(struct dsi_panel *panel);
+
+int dsi_panel_parse_fod_dim_lut(struct dsi_panel *panel, struct dsi_parser_utils *utils);
 
 #endif /* _DSI_PANEL_H_ */

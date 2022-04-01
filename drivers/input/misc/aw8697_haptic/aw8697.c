@@ -3553,11 +3553,16 @@ static int aw8697_haptic_init(struct aw8697 *aw8697)
 		mutex_unlock(&aw8697->lock);
 
 		/* f0 calibration */
-		mutex_lock(&aw8697->lock);
-#ifndef CONFIG_BOARD_LMI
-	aw8697_haptic_f0_calibration(aw8697);
-#endif
-		mutex_unlock(&aw8697->lock);
+		if (aw8697->info.is_enabled_powerup_f0_cali) {
+			mutex_lock(&aw8697->lock);
+			aw8697_haptic_f0_calibration(aw8697);
+			mutex_unlock(&aw8697->lock);
+		} else {
+			aw_dev_info(aw8697->dev,
+				"%s powerup f0 calibration is disabled\n",
+				 __func__);
+		}
+	
 		/* beme config */
 		bemf_config = aw8697->info.bemf_config[0];
 		aw8697_i2c_write(aw8697, AW8697_REG_BEMF_VTHH_H, bemf_config);
@@ -4048,6 +4053,12 @@ static int aw8697_parse_dt_common(struct device *dev, struct aw8697 *aw8697,
 				 &aw8697->info.f0_cali_percen);
 	if (val != 0)
 		dev_err(dev, "%s: vib_f0_cali_percen not found\n", __func__);
+
+	aw8697->info.is_enabled_powerup_f0_cali =
+	    of_property_read_bool(np, "vib_powerup_f0_cali");
+	aw_dev_info(aw8697->dev,
+		    "%s aw8697->info.is_enabled_powerup_f0_cali = %d\n",
+		    __func__, aw8697->info.is_enabled_powerup_f0_cali);
 
 	val =
 	    of_property_read_u32_array(np, "vib_rtp_time", rtp_time,

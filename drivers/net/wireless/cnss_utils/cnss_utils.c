@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2017, 2019 The Linux Foundation. All rights reserved. */
+/* Copyright (c) 2017, 2021 The Linux Foundation. All rights reserved. */
 
 #define pr_fmt(fmt) "cnss_utils: " fmt
 
@@ -10,7 +10,7 @@
 #include <linux/debugfs.h>
 #include <net/cnss_utils.h>
 
-#define CNSS_MAX_CH_NUM 45
+#define CNSS_MAX_CH_NUM 157
 struct cnss_unsafe_channel_list {
 	u16 unsafe_ch_count;
 	u16 unsafe_ch_list[CNSS_MAX_CH_NUM];
@@ -470,4 +470,4 @@ module_init(cnss_utils_init);
 module_exit(cnss_utils_exit);
 
 MODULE_LICENSE("GPL v2");
-MODULE_DESCRIPTION(DEVICE "CNSS Utilities Driver");
+MODULE_DESCRIPTION("CNSS Utilities Driver");

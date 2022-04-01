@@ -1211,6 +1211,26 @@ static int bq2597x_set_ibus_ucp_thr(struct bq2597x *bq, int ibus_ucp_thr)
 	return ret;
 }
 
+static int bq2597x_set_ucp_threshold(struct bq2597x *bq, int curr_ma)
+{
+	int ret;
+	u8 val;
+
+	if (curr_ma == 300)
+		val = BQ2597X_IBUS_UCP_RISE_300MA;
+	else if (curr_ma == 500)
+		val = BQ2597X_IBUS_UCP_RISE_500MA;
+	else
+		val = BQ2597X_IBUS_UCP_RISE_300MA;
+
+	val <<= BQ2597X_IBUS_UCP_RISE_TH_SHIFT;
+
+	ret = bq2597x_update_bits(bq, BQ2597X_REG_2B,
+				BQ2597X_IBUS_UCP_RISE_TH_MASK,
+				val);
+	return ret;
+}
+
 static int bq2597x_enable_regulation(struct bq2597x *bq, bool enable)
 {
 	int ret;
@@ -1339,21 +1359,6 @@ static int bq2597x_set_vbat_reg_th(struct bq2597x *bq, int th_mv)
 	ret = bq2597x_update_bits(bq, BQ2597X_REG_2C,
 				BQ2597X_VBAT_REG_MASK,
 				val);
-
-	return ret;
-}
-
-
-static int bq2597x_check_reg_status(struct bq2597x *bq)
-{
-	int ret;
-	u8 val;
-
-	ret = bq2597x_read_byte(bq, BQ2597X_REG_2C, &val);
-	if (!ret) {
-		bq->vbat_reg = !!(val & BQ2597X_VBAT_REG_ACTIVE_STAT_MASK);
-		bq->ibat_reg = !!(val & BQ2597X_IBAT_REG_ACTIVE_STAT_MASK);
-	}
 
 	return ret;
 }
@@ -1722,6 +1727,7 @@ static int bq2597x_init_device(struct bq2597x *bq)
 	bq2597x_set_ibus_ucp_thr(bq, 300);
 	bq2597x_enable_ucp(bq,1);
 	bq2597x_set_sense_resistor(bq, bq->cfg->sense_r_mohm);
+	bq2597x_set_ucp_threshold(bq, 300);
 
 	bq2597x_init_protection(bq);
 	bq2597x_init_adc(bq);
@@ -1814,7 +1820,7 @@ static ssize_t bq2597x_show_diff_ti_bus_current(struct device *dev,struct device
 			}
 			bq_info("success get bq2597x-slave \n");
 		}
-		rc = power_supply_get_property(bq2597x_slave,POWER_SUPPLY_PROP_TI_BUS_CURRENT,&pval);
+		rc = power_supply_get_property(bq2597x_slave,POWER_SUPPLY_PROP_BUS_CURRENT,&pval);
 		if (rc < 0) {
 			bq_info("failed get bq2597x-slave ti_bus_current \n");
 			return -EINVAL;
@@ -1854,112 +1860,63 @@ static const struct attribute_group bq2597x_attr_group = {
 static enum power_supply_property bq2597x_charger_props[] = {
 	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_CHARGING_ENABLED,
-	POWER_SUPPLY_PROP_STATUS,
-	POWER_SUPPLY_PROP_TI_BATTERY_PRESENT,
-	POWER_SUPPLY_PROP_TI_VBUS_PRESENT,
-	POWER_SUPPLY_PROP_TI_BATTERY_VOLTAGE,
-	POWER_SUPPLY_PROP_TI_BATTERY_CURRENT,
-	POWER_SUPPLY_PROP_TI_BATTERY_TEMPERATURE,
-	POWER_SUPPLY_PROP_TI_BUS_VOLTAGE,
-	POWER_SUPPLY_PROP_TI_BUS_CURRENT,
-	POWER_SUPPLY_PROP_TI_BUS_TEMPERATURE,
-	POWER_SUPPLY_PROP_TI_DIE_TEMPERATURE,
-	POWER_SUPPLY_PROP_TI_ALARM_STATUS,
-	POWER_SUPPLY_PROP_TI_FAULT_STATUS,
-	POWER_SUPPLY_PROP_TI_REG_STATUS,
-	POWER_SUPPLY_PROP_MODEL_NAME,
+	POWER_SUPPLY_PROP_VOLTAGE_NOW,
+	POWER_SUPPLY_PROP_CURRENT_NOW,
+	POWER_SUPPLY_PROP_INPUT_VOLTAGE_SETTLED,
+	POWER_SUPPLY_PROP_INPUT_CURRENT_NOW,
+	POWER_SUPPLY_PROP_CHARGE_NOW_ERROR,
 };
+
 static void bq2597x_check_alarm_status(struct bq2597x *bq);
 static void bq2597x_check_fault_status(struct bq2597x *bq);
-static int bq2597x_check_vbus_error_status(struct bq2597x *bq);
 
 static int bq2597x_charger_get_property(struct power_supply *psy,
 				enum power_supply_property psp,
 				union power_supply_propval *val)
 {
-	struct bq2597x *bq = power_supply_get_drvdata(psy);
-	int result;
+	struct bq2597x *bq  = power_supply_get_drvdata(psy);
 	int ret;
-	u8 reg_val;
+	int result;
 
 	switch (psp) {
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
 		bq2597x_check_charge_enabled(bq, &bq->charge_enabled);
 		val->intval = bq->charge_enabled;
-		bq_info("POWER_SUPPLY_PROP_CHARGING_ENABLED: %s\n",
-				val->intval ? "enable" : "disable");
-		break;
-	case POWER_SUPPLY_PROP_STATUS:
-		val->intval = 0;
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
-		val->intval = bq->usb_present;
-		break;
-	case POWER_SUPPLY_PROP_TI_BATTERY_PRESENT:
-		ret = bq2597x_read_byte(bq, BQ2597X_REG_0D, &reg_val);
-		if (!ret)
-			bq->batt_present  = !!(reg_val & VBAT_INSERT);
-		val->intval = bq->batt_present;
-		break;
-	case POWER_SUPPLY_PROP_TI_VBUS_PRESENT:
-		ret = bq2597x_read_byte(bq, BQ2597X_REG_0D, &reg_val);
-		if (!ret)
-			bq->vbus_present  = !!(reg_val & VBUS_INSERT);
 		val->intval = bq->vbus_present;
 		break;
-	case POWER_SUPPLY_PROP_TI_BATTERY_VOLTAGE:
+	case POWER_SUPPLY_PROP_VOLTAGE_NOW:
 		ret = bq2597x_get_adc_data(bq, ADC_VBAT, &result);
 		if (!ret)
 			bq->vbat_volt = result;
 
 		val->intval = bq->vbat_volt;
 		break;
-	case POWER_SUPPLY_PROP_TI_BATTERY_CURRENT:
+	case POWER_SUPPLY_PROP_CURRENT_NOW:
 		ret = bq2597x_get_adc_data(bq, ADC_IBAT, &result);
 		if (!ret)
 			bq->ibat_curr = result;
 
 		val->intval = bq->ibat_curr;
 		break;
-	case POWER_SUPPLY_PROP_TI_BATTERY_TEMPERATURE:
-		ret = bq2597x_get_adc_data(bq, ADC_TBAT, &result);
-		if (!ret)
-			bq->bat_temp = result;
-
-		val->intval = bq->bat_temp;
-		break;
-	case POWER_SUPPLY_PROP_TI_BUS_VOLTAGE:
+	case POWER_SUPPLY_PROP_INPUT_VOLTAGE_SETTLED:
 		ret = bq2597x_get_adc_data(bq, ADC_VBUS, &result);
 		if (!ret)
 			bq->vbus_volt = result;
 
 		val->intval = bq->vbus_volt;
 		break;
-	case POWER_SUPPLY_PROP_TI_BUS_CURRENT:
+	case POWER_SUPPLY_PROP_INPUT_CURRENT_NOW:
 		ret = bq2597x_get_adc_data(bq, ADC_IBUS, &result);
 		if (!ret)
 			bq->ibus_curr = result;
 
 		val->intval = bq->ibus_curr;
 		break;
-	case POWER_SUPPLY_PROP_TI_BUS_TEMPERATURE:
-		ret = bq2597x_get_adc_data(bq, ADC_TBUS, &result);
-		if (!ret)
-			bq->bus_temp = result;
-
-		val->intval = bq->bus_temp;
-		break;
-	case POWER_SUPPLY_PROP_TI_DIE_TEMPERATURE:
-		ret = bq2597x_get_adc_data(bq, ADC_TDIE, &result);
-		if (!ret)
-			bq->die_temp = result;
-
-		val->intval = bq->die_temp;
-		break;
-	case POWER_SUPPLY_PROP_TI_ALARM_STATUS:
-
+	case POWER_SUPPLY_PROP_CHARGE_NOW_ERROR:
 		bq2597x_check_alarm_status(bq);
-
+		bq2597x_check_fault_status(bq);
 		val->intval = ((bq->bat_ovp_alarm << BAT_OVP_ALARM_SHIFT)
 			| (bq->bat_ocp_alarm << BAT_OCP_ALARM_SHIFT)
 			| (bq->bat_ucp_alarm << BAT_UCP_ALARM_SHIFT)
@@ -1967,13 +1924,8 @@ static int bq2597x_charger_get_property(struct power_supply *psy,
 			| (bq->bus_ocp_alarm << BUS_OCP_ALARM_SHIFT)
 			| (bq->bat_therm_alarm << BAT_THERM_ALARM_SHIFT)
 			| (bq->bus_therm_alarm << BUS_THERM_ALARM_SHIFT)
-			| (bq->die_therm_alarm << DIE_THERM_ALARM_SHIFT));
-		break;
-
-	case POWER_SUPPLY_PROP_TI_FAULT_STATUS:
-		bq2597x_check_fault_status(bq);
-
-		val->intval = ((bq->bat_ovp_fault << BAT_OVP_FAULT_SHIFT)
+			| (bq->die_therm_alarm << DIE_THERM_ALARM_SHIFT)
+			| (bq->bat_ovp_fault << BAT_OVP_FAULT_SHIFT)
 			| (bq->bat_ocp_fault << BAT_OCP_FAULT_SHIFT)
 			| (bq->bus_ovp_fault << BUS_OVP_FAULT_SHIFT)
 			| (bq->bus_ocp_fault << BUS_OCP_FAULT_SHIFT)
@@ -1981,33 +1933,10 @@ static int bq2597x_charger_get_property(struct power_supply *psy,
 			| (bq->bus_therm_fault << BUS_THERM_FAULT_SHIFT)
 			| (bq->die_therm_fault << DIE_THERM_FAULT_SHIFT));
 		break;
-
-	case POWER_SUPPLY_PROP_TI_REG_STATUS:
-		bq2597x_check_reg_status(bq);
-		val->intval = (bq->vbat_reg << VBAT_REG_STATUS_SHIFT) |
-				(bq->ibat_reg << IBAT_REG_STATUS_SHIFT);
-		break;
-	case POWER_SUPPLY_PROP_MODEL_NAME:
-		ret = bq2597x_get_work_mode(bq, &bq->mode);
-		if (ret) {
-			val->strval = "unknown";
-		} else {
-			if (bq->mode == BQ25970_ROLE_MASTER)
-				val->strval = "bq2597x-master";
-			else if (bq->mode == BQ25970_ROLE_SLAVE)
-				val->strval = "bq2597x-slave";
-			else
-				val->strval = "bq2597x-standalone";
-		}
-		break;
-	case POWER_SUPPLY_PROP_TI_BUS_ERROR_STATUS:
-		val->intval = bq2597x_check_vbus_error_status(bq);
-		break;
 	default:
 		return -EINVAL;
 
 	}
-
 	return 0;
 }
 
@@ -2015,17 +1944,20 @@ static int bq2597x_charger_set_property(struct power_supply *psy,
 				       enum power_supply_property prop,
 				       const union power_supply_propval *val)
 {
-	struct bq2597x *bq = power_supply_get_drvdata(psy);
+	struct bq2597x *bq  = power_supply_get_drvdata(psy);
 
 	switch (prop) {
 	case POWER_SUPPLY_PROP_CHARGING_ENABLED:
+
 		bq2597x_enable_charge(bq, val->intval);
 		bq2597x_check_charge_enabled(bq, &bq->charge_enabled);
 		bq_info("POWER_SUPPLY_PROP_CHARGING_ENABLED: %s\n",
 				val->intval ? "enable" : "disable");
+
 		break;
 	case POWER_SUPPLY_PROP_PRESENT:
 		bq2597x_set_present(bq, !!val->intval);
+		bq_info("set present :%d\n", val->intval);
 		break;
 	default:
 		return -EINVAL;
@@ -2049,7 +1981,6 @@ static int bq2597x_charger_is_writeable(struct power_supply *psy,
 	}
 	return ret;
 }
-
 
 static int bq2597x_psy_register(struct bq2597x *bq)
 {
@@ -2218,24 +2149,6 @@ static void bq2597x_check_fault_status(struct bq2597x *bq)
 	}
 
 	mutex_unlock(&bq->data_lock);
-}
-
-
-static int bq2597x_check_vbus_error_status(struct bq2597x *bq)
-{
-	int ret;
-	u8 stat = 0;
-
-	ret = bq2597x_read_byte(bq, BQ2597X_REG_0A, &stat);
-	if (!ret) {
-		bq_info("BQ2597X_REG_0A:0x%02x\n", stat);
-		if (stat & VBUS_ERROR_LOW_MASK)
-			return VBUS_ERROR_LOW;
-		else if (stat & VBUS_ERROR_HIGH_MASK)
-			return VBUS_ERROR_HIGH;
-	}
-
-	return VBUS_ERROR_NONE;
 }
 
 /*

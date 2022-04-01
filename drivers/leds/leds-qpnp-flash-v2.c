@@ -1,11 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
-<<<<<<< HEAD
- * Copyright (c) 2016-2020, The Linux Foundation. All rights reserved.
- * Copyright (C) 2021 XiaoMi, Inc.
-=======
  * Copyright (c) 2016-2021, The Linux Foundation. All rights reserved.
->>>>>>> f50521fa0d1f7630a6a1c819f4910f080c623fb7
+ * Copyright (C) 2021 XiaoMi, Inc.
  */
 
 #define pr_fmt(fmt)	"flashv2: %s: " fmt, __func__
@@ -1796,7 +1792,6 @@ static int qpnp_flash_led_regulator_control(struct led_classdev *led_cdev,
 
 	return 0;
 }
-EXPORT_SYMBOL_GPL(qpnp_flash_led_prepare);
 
 static int qpnp_flash_leds_prepare(struct led_trigger *trig, int options,
 					int *max_current)
@@ -1819,6 +1814,7 @@ static int qpnp_flash_leds_prepare(struct led_trigger *trig, int options,
 
 	return rc;
 }
+EXPORT_SYMBOL_GPL(qpnp_flash_leds_prepare);
 
 static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 						enum led_brightness value)

@@ -101,6 +101,19 @@ endif
 # builds. Other OEMs are also protected using the TARGET_BUILD_VARIANT
 # config.
 
+############ Device selection ############
+ifdef CONFIG_BOARD_LMI
+CDEFINES += -DTFA_ADSP_SUPPORTED
+endif
+
+ifdef CONFIG_BOARD_PICASSO
+CDEFINES += -DTFA_ADSP_SUPPORTED
+endif
+
+ifdef CONFIG_BOARD_XIAOMI_SM8250
+	CDEFINES += -DAUDIO_SM8250_FLAG
+endif
+
 ############ UAPI ############
 UAPI_DIR :=	uapi
 UAPI_INC :=	-I$(AUDIO_ROOT)/include/$(UAPI_DIR)
@@ -231,30 +244,6 @@ CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
 		-Werror\
 		-D__linux__
 
-ifdef CONFIG_BOARD_ALIOTH
-CDEFINES += -DCONFIG_US_PROXIMITY
-endif
-
-ifdef CONFIG_BOARD_APOLLO
-CDEFINES += -DCONFIG_US_PROXIMITY
-endif
-
-ifdef CONFIG_BOARD_CAS
-CDEFINES += -DCONFIG_US_PROXIMITY
-endif
-
-ifdef CONFIG_BOARD_LMI
-CDEFINES += -DTFA_ADSP_SUPPORTED
-endif
-
-ifdef CONFIG_BOARD_THYME
-CDEFINES += -DCONFIG_US_PROXIMITY
-endif
-
-ifdef CONFIG_BOARD_PICASSO
-CDEFINES += -DTFA_ADSP_SUPPORTED
-endif
-
 KBUILD_CPPFLAGS += $(CDEFINES)
 
 # Currently, for versions of gcc which support it, the kernel Makefile
@@ -283,10 +272,6 @@ endif
 
 ifeq ($(KERNEL_BUILD), 0)
 KBUILD_EXTRA_SYMBOLS +=$(OUT)/obj/vendor/qcom/opensource/audio-kernel/ipc/Module.symvers
-endif
-
-ifdef CONFIG_BOARD_XIAOMI_SM8250
-	CDEFINES += -DAUDIO_SM8250_FLAG
 endif
 
 ifeq ($(KERNEL_BUILD), 1)

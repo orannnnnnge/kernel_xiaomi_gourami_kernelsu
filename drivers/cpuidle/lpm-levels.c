@@ -1751,8 +1751,10 @@ static int lpm_suspend_enter(suspend_state_t state)
 	 * which resources are enabled and preventing the system level
 	 * LPMs (XO and Vmin).
 	 */
+#ifdef CONFIG_DEBUG_FS
 	clock_debug_print_enabled();
 	regulator_debug_print_enabled();
+#endif
 
 	cpu_prepare(lpm_cpu, idx, false);
 	cluster_prepare(cluster, cpumask, idx, false, 0);

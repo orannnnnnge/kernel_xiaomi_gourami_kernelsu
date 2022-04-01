@@ -2142,6 +2142,10 @@ int dsi_panel_bl_parse_config(struct device *parent, struct dsi_backlight_config
 		bl->high_byte_offset = val;
 	}
 
+	rc = dsi_panel_parse_fod_dim_lut(panel, utils);
+	if (rc)
+		pr_err("[%s failed to parse fod dim lut\n", panel->name);
+
 	bl->en_gpio = utils->get_named_gpio(utils->data,
 					      "qcom,platform-bklight-en-gpio",
 					      0);

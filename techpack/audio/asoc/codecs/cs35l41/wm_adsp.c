@@ -3780,22 +3780,34 @@ static int wm_halo_apply_calibration(struct snd_soc_dapm_widget *w)
 	struct wm_adsp *dsps = snd_soc_component_get_drvdata(component);
 	struct wm_adsp *dsp = &dsps[w->shift];
 
-	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_R", 9719);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_R", 10158);
 	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_STATUS", 1);
-	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_CHECKSUM", 9720);
-	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_AMBIENT", 25);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_CHECKSUM", 10159);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection cd CAL_AMBIENT", 30);
 	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_R");
 	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_STATUS");
 	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_CHECKSUM");
 	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection cd CAL_AMBIENT");
-	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_R", 10063);
+#if defined(CONFIG_TARGET_PRODUCT_APOLLO) || defined (CONFIG_TARGET_PRODUCT_ALIOTH)
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection 400a4 OFFSET_HOLD_TIME", 150);
+	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection 400a4 E_FULL_US_BYPASS", 1);
+	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection 400a4 OFFSET_HOLD_TIME");
+	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection 400a4 E_FULL_US_BYPASS");
+#endif
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_R", 8434);
 	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_STATUS", 1);
-	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_CHECKSUM", 10064);
-	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_AMBIENT", 25);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_CHECKSUM", 8435);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_AMBIENT", 30);
 	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_R");
 	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_STATUS");
 	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_CHECKSUM");
 	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_AMBIENT");
+#if defined(CONFIG_TARGET_PRODUCT_APOLLO) || defined (CONFIG_TARGET_PRODUCT_ALIOTH)
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection 400a4 OFFSET_HOLD_TIME", 150);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection 400a4 E_FULL_US_BYPASS", 1);
+	wm_adsp_k_ctl_get(dsp, "DSP1 Protection 400a4 OFFSET_HOLD_TIME");
+	wm_adsp_k_ctl_get(dsp, "DSP1 Protection 400a4 E_FULL_US_BYPASS");
+#endif
 
 	return 0;
 }

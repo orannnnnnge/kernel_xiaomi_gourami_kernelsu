@@ -94,10 +94,6 @@ static const struct iio_buffer_setup_ops us_buffer_setup_ops = {
 	.predisable = us_buffer_predisable,
 };
 
-static const struct iio_trigger_ops us_sensor_trigger_ops = {
-	//.owner = THIS_MODULE,
-};
-
 int us_setup_trigger_sensor(struct iio_dev *indio_dev)
 {
 	struct iio_trigger *trigger;
@@ -108,7 +104,6 @@ int us_setup_trigger_sensor(struct iio_dev *indio_dev)
 		return -ENOMEM;
 
 	trigger->dev.parent = indio_dev->dev.parent;
-	trigger->ops = &us_sensor_trigger_ops;
 	ret = iio_trigger_register(trigger);
 	if (ret < 0)
 		goto exit_free_trigger;
@@ -146,7 +141,7 @@ int us_afe_callback(int data)
 	return 0;
 }
 
-EXPORT_SYMBOL(us_afe_callback);
+EXPORT_SYMBOL_GPL(us_afe_callback);
 
 static ssize_t us_show_dump_output(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -172,7 +167,6 @@ static ssize_t us_store_dump_output(struct device *dev,
 static DEVICE_ATTR(dump_output, S_IWUSR | S_IRUGO,
 		us_show_dump_output, us_store_dump_output);
 
-
 static struct attribute *us_prox_attributes[] = {
 	&dev_attr_dump_output.attr,
 	NULL,
@@ -183,7 +177,6 @@ static struct attribute_group us_prox_attribute_group = {
 };
 
 static const struct iio_info us_proximity_info = {
-	//.driver_module = THIS_MODULE,
 	.attrs = &us_prox_attribute_group,
 };
 

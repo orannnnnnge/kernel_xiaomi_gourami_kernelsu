@@ -4983,6 +4983,14 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CALIBRATE:
 		pval->intval = chip->calib_level;
 		break;
+	case POWER_SUPPLY_PROP_STATUS:
+		if (fg->battery_missing)
+			pval->intval = POWER_SUPPLY_STATUS_DISCHARGING;
+		else if (batt_psy_initialized(fg))
+			rc = power_supply_get_property(fg->batt_psy,
+						       POWER_SUPPLY_PROP_STATUS,
+						       pval);
+		break;
 	case POWER_SUPPLY_PROP_HEALTH:
 		rc = power_supply_get_property(fg->batt_psy,
 					       POWER_SUPPLY_PROP_HEALTH, pval);
@@ -5154,6 +5162,7 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_SCALE_MODE_EN,
 	POWER_SUPPLY_PROP_CALIBRATE,
+	POWER_SUPPLY_PROP_STATUS,
 };
 
 #if IS_ENABLED(CONFIG_GOOGLE_BMS)

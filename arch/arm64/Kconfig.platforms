@@ -154,7 +154,6 @@ config ARCH_QCOM
 config ARCH_KONA
 	bool "Enable Support for Qualcomm Technologies, Inc. KONA"
 	depends on ARCH_QCOM
-	select COMMON_CLK_QCOM
 	help
 	  This enables support for the KONA chipset. If you do not
 	  wish to build a kernel that runs on this chipset, say 'N' here.\
@@ -162,7 +161,6 @@ config ARCH_KONA
 config ARCH_LITO
 	bool "Enable Support for Qualcomm Technologies, Inc. LITO"
 	depends on ARCH_QCOM
-	select COMMON_CLK_QCOM
 	help
 	  This enables support for the LITO chipset. If you do not
 	  wish to build a kernel that runs on this chipset, say 'N' here.

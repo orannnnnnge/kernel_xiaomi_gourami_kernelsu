@@ -35,7 +35,7 @@
 #include <linux/pstore_ram.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#ifdef CONFIG_MTD_BLOCK2MTD
+#ifdef CONFIG_PSTORE_RAM
 #include <linux/memblock.h>
 #endif
 #include <linux/bldr_debug_tools.h>
@@ -974,7 +974,7 @@ static void __init ramoops_register_dummy(void)
 	}
 }
 
-#ifdef CONFIG_MTD_BLOCK2MTD
+#ifdef CONFIG_PSTORE_RAM
 struct ramoops_platform_data ramoops_data;
 
 static struct platform_device ramoops_dev  = {

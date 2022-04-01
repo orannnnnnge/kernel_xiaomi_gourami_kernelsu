@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
  */
 #define pr_fmt(fmt) "synx: " fmt
 
@@ -451,10 +451,10 @@ static int synx_release_core(struct synx_table_row *row)
 	 * (definitely for merged synx on invoing deinit)
 	 * be carefull while accessing the metadata
 	 */
-	mutex_lock(&synx_dev->row_locks[row->index]);
-	fence = row->fence;
 	idx = row->index;
-	if (!idx) {
+	mutex_lock(&synx_dev->row_locks[idx]);
+	fence = row->fence;
+	if ((!idx) || (!fence)) {
 		mutex_unlock(&synx_dev->row_locks[idx]);
 		pr_err("object already cleaned up at %d\n", idx);
 		return -EINVAL;
@@ -1472,6 +1472,7 @@ int synx_initialize(struct synx_initialization_params *params)
 			params->name);
 	return 0;
 }
+EXPORT_SYMBOL_GPL(synx_initialize);
 
 int synx_uninitialize(void)
 {
@@ -1484,6 +1485,7 @@ int synx_uninitialize(void)
 
 	return 0;
 }
+EXPORT_SYMBOL_GPL(synx_uninitialize);
 
 int synx_register_ops(const struct synx_register_params *params)
 {
@@ -1520,6 +1522,7 @@ int synx_register_ops(const struct synx_register_params *params)
 
 	return rc;
 }
+EXPORT_SYMBOL_GPL(synx_register_ops);
 
 int synx_deregister_ops(const struct synx_register_params *params)
 {

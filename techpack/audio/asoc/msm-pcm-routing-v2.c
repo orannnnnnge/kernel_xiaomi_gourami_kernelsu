@@ -31,11 +31,11 @@
 #include <dsp/q6core.h>
 #include <dsp/q6common.h>
 #include <dsp/audio_cal_utils.h>
-#ifdef CONFIG_ELLIPTIC_PROXIMITY
+#if IS_ENABLED(CONFIG_ELLIPTIC_PROXIMITY)
 #include <dsp/apr_elliptic.h>
 #include <elliptic/elliptic_mixer_controls.h>
 #endif
-#ifdef CONFIG_US_PROXIMITY
+#if IS_ENABLED(CONFIG_US_PROXIMITY)
 #include <dsp/apr_mius.h>
 #include <mius/mius_mixer_controls.h>
 #endif
@@ -31270,10 +31270,10 @@ static int msm_routing_probe(struct snd_soc_component *component)
 	snd_soc_add_component_controls(component,
 			port_multi_channel_map_mixer_controls,
 			ARRAY_SIZE(port_multi_channel_map_mixer_controls));
-#ifdef CONFIG_ELLIPTIC_PROXIMITY
+#if IS_ENABLED(CONFIG_ELLIPTIC_PROXIMITY)
 	elliptic_add_component_controls(component);
 #endif
-#ifdef CONFIG_US_PROXIMITY
+#if IS_ENABLED(CONFIG_US_PROXIMITY)
 	mius_add_component_controls(component);
 #endif
 
