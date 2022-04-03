@@ -687,6 +687,7 @@ static int cnss_set_pci_link(struct cnss_pci_data *pci_priv, bool link_up)
 	struct pci_dev *pci_dev = pci_priv->pci_dev;
 	enum msm_pcie_pm_opt pm_ops;
 	int retry = 0;
+	u32 pm_options = PM_OPTIONS_DEFAULT;
 
 	cnss_pr_vdbg("%s PCI link\n", link_up ? "Resuming" : "Suspending");
 
@@ -696,8 +697,10 @@ static int cnss_set_pci_link(struct cnss_pci_data *pci_priv, bool link_up)
 		if (pci_priv->drv_connected_last) {
 			cnss_pr_vdbg("Use PCIe DRV suspend\n");
 			pm_ops = MSM_PCIE_DRV_SUSPEND;
-			if (pci_priv->device_id != QCA6390_DEVICE_ID)
+			if (pci_priv->device_id != QCA6390_DEVICE_ID) {
+				pm_options |= MSM_PCIE_CONFIG_NO_DRV_PC;
 				cnss_set_pci_link_status(pci_priv, PCI_GEN1);
+			}
 		} else {
 			pm_ops = MSM_PCIE_SUSPEND;
 		}
@@ -705,7 +708,7 @@ static int cnss_set_pci_link(struct cnss_pci_data *pci_priv, bool link_up)
 
 retry:
 	ret = msm_pcie_pm_control(pm_ops, pci_dev->bus->number, pci_dev,
-				  NULL, PM_OPTIONS_DEFAULT);
+				  NULL, pm_options);
 	if (ret) {
 		cnss_pr_err("Failed to %s PCI link with default option, err = %d\n",
 			    link_up ? "resume" : "suspend", ret);
@@ -1257,10 +1260,13 @@ static int cnss_pci_set_mhi_state(struct cnss_pci_data *pci_priv,
 		break;
 	case CNSS_MHI_RESUME:
 		mutex_lock(&pci_priv->mhi_ctrl->pm_mutex);
-		if (pci_priv->drv_connected_last)
+		if (pci_priv->drv_connected_last) {
+			cnss_pci_prevent_l1(&pci_priv->pci_dev->dev);
 			ret = mhi_pm_fast_resume(pci_priv->mhi_ctrl, true);
-		else
+			cnss_pci_allow_l1(&pci_priv->pci_dev->dev);
+		} else {
 			ret = mhi_pm_resume(pci_priv->mhi_ctrl);
+		}
 		mutex_unlock(&pci_priv->mhi_ctrl->pm_mutex);
 		break;
 	case CNSS_MHI_TRIGGER_RDDM:
@@ -2879,6 +2885,9 @@ static int cnss_pci_suspend_noirq(struct device *dev)
 	if (!pci_priv)
 		goto out;
 
+	if (!cnss_is_device_powered_on(pci_priv->plat_priv))
+		goto out;
+
 	driver_ops = pci_priv->driver_ops;
 	if (driver_ops && driver_ops->suspend_noirq)
 		ret = driver_ops->suspend_noirq(pci_dev);
@@ -2895,6 +2904,9 @@ static int cnss_pci_resume_noirq(struct device *dev)
 	struct cnss_wlan_driver *driver_ops;
 
 	if (!pci_priv)
+		goto out;
+
+	if (!cnss_is_device_powered_on(pci_priv->plat_priv))
 		goto out;
 
 	driver_ops = pci_priv->driver_ops;
@@ -3927,11 +3939,6 @@ static int cnss_pci_enable_msi(struct cnss_pci_data *pci_priv)
 	}
 
 	pci_priv->msi_ep_base_data = msi_desc->msg.data;
-	if (!pci_priv->msi_ep_base_data) {
-		cnss_pr_err("Got 0 MSI base data!\n");
-		CNSS_ASSERT(0);
-	}
-
 	cnss_pr_dbg("MSI base data is %d\n", pci_priv->msi_ep_base_data);
 
 	return 0;
@@ -4117,6 +4124,7 @@ static void cnss_pci_disable_bus(struct cnss_pci_data *pci_priv)
 
 	pci_clear_master(pci_dev);
 	pci_load_and_free_saved_state(pci_dev, &pci_priv->saved_state);
+	pci_load_and_free_saved_state(pci_dev, &pci_priv->default_state);
 
 	if (pci_priv->bar) {
 		pci_iounmap(pci_dev, pci_priv->bar);
@@ -4915,6 +4923,22 @@ static void cnss_pci_config_regs(struct cnss_pci_data *pci_priv)
 	}
 }
 
+/* Setting to use this cnss_pm_domain ops will let PM framework override the
+ * ops from dev->bus->pm which is pci_dev_pm_ops from pci-driver.c. This ops
+ * has to take care everything device driver needed which is currently done
+ * from pci_dev_pm_ops.
+ */
+static struct dev_pm_domain cnss_pm_domain = {
+	.ops = {
+		SET_SYSTEM_SLEEP_PM_OPS(cnss_pci_suspend, cnss_pci_resume)
+		SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(cnss_pci_suspend_noirq,
+					      cnss_pci_resume_noirq)
+		SET_RUNTIME_PM_OPS(cnss_pci_runtime_suspend,
+				   cnss_pci_runtime_resume,
+				   cnss_pci_runtime_idle)
+	}
+};
+
 static int cnss_pci_probe(struct pci_dev *pci_dev,
 			  const struct pci_device_id *id)
 {
@@ -4942,6 +4966,8 @@ static int cnss_pci_probe(struct pci_dev *pci_dev,
 	plat_priv->device_id = pci_dev->device;
 	plat_priv->bus_priv = pci_priv;
 	mutex_init(&pci_priv->bus_lock);
+	if (plat_priv->use_pm_domain)
+		dev->pm_domain = &cnss_pm_domain;
 
 	ret = of_reserved_mem_device_init(dev);
 	if (ret)

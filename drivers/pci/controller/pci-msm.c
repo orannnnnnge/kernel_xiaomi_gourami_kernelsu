@@ -7630,6 +7630,8 @@ static int msm_pcie_drv_suspend(struct msm_pcie_dev_t *pcie_dev,
 	PCIE_DBG(pcie_dev, "PCIe RC%d: LTSSM_STATE: %s\n",
 		pcie_dev->rc_idx, TO_LTSSM_STR(val & 0x3f));
 
+	drv_info->drv_enable.pkt.dword[2] = options & MSM_PCIE_CONFIG_NO_DRV_PC;
+
 	ret = rpmsg_trysend(rpdev->ept, drv_enable, sizeof(*drv_enable));
 	if (ret) {
 		PCIE_ERR(pcie_dev, "PCIe: RC%d: DRV: failed to send rpmsg\n",
