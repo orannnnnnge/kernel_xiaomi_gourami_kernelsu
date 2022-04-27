@@ -78,7 +78,7 @@
 #define PD_SNK_MAX_MV			9000
 #define PD_SNK_MIN_MV			5000
 #define PD_SNK_MAX_MA			3000
-#define PD_SNK_MAX_MA_9V		3000
+#define PD_SNK_MAX_MA_9V		2200
 
 #define PDO_FIXED_FLAGS \
 	(PDO_FIXED_DUAL_ROLE | PDO_FIXED_DATA_SWAP | PDO_FIXED_USB_COMM)
@@ -229,8 +229,6 @@ struct chg_drv {
 	const char *wlc_psy_name;
 	struct power_supply *bat_psy;
 	const char *bat_psy_name;
-	struct power_supply *bms_psy;
-	const char *bms_psy_name;
 	struct power_supply *tcpm_psy;
 	const char *tcpm_psy_name;
 	struct notifier_block psy_nb;
@@ -349,7 +347,6 @@ static int chg_psy_changed(struct notifier_block *nb,
 	if (action == PSY_EVENT_PROP_CHANGED &&
 	    (!strcmp(psy->desc->name, chg_drv->chg_psy_name) ||
 	     !strcmp(psy->desc->name, chg_drv->bat_psy_name) ||
-	     !strcmp(psy->desc->name, chg_drv->bms_psy_name) ||
 	     !strcmp(psy->desc->name, "usb") ||
 	     !strcmp(psy->desc->name, chg_drv->tcpm_psy_name) ||
 	     (chg_drv->wlc_psy_name &&
@@ -1845,7 +1842,6 @@ static void chg_work(struct work_struct *work)
 	struct power_supply *usb_psy = chg_drv->usb_psy;
 	struct power_supply *wlc_psy = chg_drv->wlc_psy;
 	struct power_supply *bat_psy = chg_drv->bat_psy;
-	struct power_supply *bms_psy = chg_drv->bms_psy;
 	union gbms_ce_adapter_details ad = { .v = 0 };
 	union gbms_charger_state chg_state = { .v = 0 };
 	int present, usb_online, wlc_online = 0, wlc_present = 0;
@@ -1859,7 +1855,7 @@ static void chg_work(struct work_struct *work)
 
 	if (!chg_drv->batt_present) {
 		/* -EGAIN = NOT ready, <0 don't know yet */
-		rc = GPSY_GET_PROP(bms_psy, POWER_SUPPLY_PROP_PRESENT);
+		rc = GPSY_GET_PROP(bat_psy, POWER_SUPPLY_PROP_PRESENT);
 		if (rc < 0)
 			goto rerun_error;
 
@@ -4053,7 +4049,7 @@ static void google_charger_init_work(struct work_struct *work)
 					       init_work.work);
 	struct power_supply *chg_psy = NULL, *usb_psy = NULL;
 	struct power_supply *wlc_psy = NULL, *bat_psy = NULL;
-	struct power_supply *bms_psy = NULL, *tcpm_psy = NULL;
+	struct power_supply *tcpm_psy = NULL;
 	int ret = 0;
 
 	chg_psy = power_supply_get_by_name(chg_drv->chg_psy_name);
@@ -4067,13 +4063,6 @@ static void google_charger_init_work(struct work_struct *work)
 	if (!bat_psy) {
 		pr_info("failed to get \"%s\" power supply, retrying...\n",
 			chg_drv->bat_psy_name);
-		goto retry_init_work;
-	}
-
-	bms_psy = power_supply_get_by_name(chg_drv->bms_psy_name);
-	if (!bms_psy) {
-		pr_info("failed to get \"%s\" power supply, retrying...\n",
-			chg_drv->bms_psy_name);
 		goto retry_init_work;
 	}
 
@@ -4110,7 +4099,6 @@ static void google_charger_init_work(struct work_struct *work)
 	chg_drv->wlc_psy = wlc_psy;
 	chg_drv->usb_psy = usb_psy;
 	chg_drv->bat_psy = bat_psy;
-	chg_drv->bms_psy = bms_psy;
 	chg_drv->tcpm_psy = tcpm_psy;
 
 	ret = chg_thermal_device_init(chg_drv);
@@ -4162,8 +4150,7 @@ retry_init_work:
 
 static int google_charger_probe(struct platform_device *pdev)
 {
-	const char *chg_psy_name, *bat_psy_name = NULL;
-	const char *bms_psy_name, *wlc_psy_name = NULL;
+	const char *chg_psy_name, *bat_psy_name, *wlc_psy_name = NULL;
 	const char *tcpm_psy_name = NULL;
 	struct chg_drv *chg_drv;
 	int ret;
@@ -4184,18 +4171,6 @@ static int google_charger_probe(struct platform_device *pdev)
 	chg_drv->chg_psy_name =
 	    devm_kstrdup(&pdev->dev, chg_psy_name, GFP_KERNEL);
 	if (!chg_drv->chg_psy_name)
-		return -ENOMEM;
-
-	ret = of_property_read_string(pdev->dev.of_node,
-				      "google,bms-power-supply",
-				      &bms_psy_name);
-	if (ret != 0) {
-		pr_err("cannot read google,chg-power-supply, ret=%d\n", ret);
-		return -EINVAL;
-	}
-	chg_drv->bms_psy_name =
-	    devm_kstrdup(&pdev->dev, bms_psy_name, GFP_KERNEL);
-	if (!chg_drv->bms_psy_name)
 		return -ENOMEM;
 
 	ret = of_property_read_string(pdev->dev.of_node,
@@ -4351,8 +4326,6 @@ static int google_charger_remove(struct platform_device *pdev)
 			power_supply_put(chg_drv->chg_psy);
 		if (chg_drv->bat_psy)
 			power_supply_put(chg_drv->bat_psy);
-		if (chg_drv->bms_psy)
-			power_supply_put(chg_drv->bms_psy);
 		if (chg_drv->usb_psy)
 			power_supply_put(chg_drv->usb_psy);
 		if (chg_drv->wlc_psy)

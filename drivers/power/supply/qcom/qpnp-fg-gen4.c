@@ -1056,8 +1056,8 @@ static int fg_gen4_get_prop_capacity_raw(struct fg_gen4_chip *chip, int *val)
 	if (rc < 0)
 		return rc;
 
-	/* return if msoc is less than 10% */
-	if (msoc < 10)
+	/* return if msoc is less than 1% */
+	if (msoc < 1)
 		return -EINVAL;
 
 	if (!chip->dt.soc_hi_res) {
@@ -4983,6 +4983,14 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CALIBRATE:
 		pval->intval = chip->calib_level;
 		break;
+	case POWER_SUPPLY_PROP_PRESENT:
+		if (batt_psy_initialized(fg))
+			rc = power_supply_get_property(fg->batt_psy,
+						      POWER_SUPPLY_PROP_PRESENT,
+						      pval);
+		else
+			pval->intval = 1;
+		break;
 	case POWER_SUPPLY_PROP_STATUS:
 		if (fg->battery_missing)
 			pval->intval = POWER_SUPPLY_STATUS_DISCHARGING;
@@ -5162,7 +5170,9 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_POWER_AVG,
 	POWER_SUPPLY_PROP_SCALE_MODE_EN,
 	POWER_SUPPLY_PROP_CALIBRATE,
+	POWER_SUPPLY_PROP_PRESENT,
 	POWER_SUPPLY_PROP_STATUS,
+	POWER_SUPPLY_PROP_HEALTH,
 };
 
 #if IS_ENABLED(CONFIG_GOOGLE_BMS)

@@ -1496,7 +1496,7 @@ static void pd_transmit_handler(struct work_struct *work)
 }
 
 static int tcpm_pd_transmit(struct tcpc_dev *dev, enum tcpm_transmit_type type,
-			    const struct pd_message *msg)
+			    const struct pd_message *msg, unsigned int negotiated_rev)
 {
 	struct usbpd *pd = container_of(dev, struct usbpd, tcpc_dev);
 	struct pd_transmit_work *pd_tx_work;
@@ -1906,7 +1906,7 @@ static void pd_phy_shutdown(struct usbpd *pd)
 	if (pd->pd_capable && pd->vbus_present) {
 		set_in_hard_reset_locked(&pd->tcpc_dev, true);
 		tcpm_set_current_limit(&pd->tcpc_dev, 0, 5000);
-		tcpm_pd_transmit(&pd->tcpc_dev, TCPC_TX_HARD_RESET, NULL);
+		tcpm_pd_transmit(&pd->tcpc_dev, TCPC_TX_HARD_RESET, NULL, PD_REV20);
 	}
 	pd->pd_disabled = true;
 

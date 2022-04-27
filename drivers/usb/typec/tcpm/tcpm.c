@@ -332,7 +332,19 @@ struct tcpm_port {
 	bool attached;
 	bool connected;
 	enum typec_port_type port_type;
+
+	/*
+	 * Set to true when vbus is greater than VSAFE5V min.
+	 * Set to false when vbus falls below vSinkDisconnect max threshold.
+	 */
 	bool vbus_present;
+
+	/*
+	 * Set to true when vbus is less than VSAFE0V max.
+	 * Set to false when vbus is greater than VSAFE0V max.
+	 */
+	bool vbus_vsafe0v;
+
 	bool vbus_never_low;
 	bool vbus_source;
 	bool vbus_charge;
@@ -826,7 +838,7 @@ static int tcpm_pd_transmit(struct tcpm_port *port,
 		tcpm_log(port, "PD TX, type: %#x", type);
 
 	reinit_completion(&port->tx_complete);
-	ret = port->tcpc->pd_transmit(port->tcpc, type, msg);
+	ret = port->tcpc->pd_transmit(port->tcpc, type, msg, port->negotiated_rev);
 	if (ret < 0)
 		return ret;
 
@@ -1873,10 +1885,8 @@ static void vdm_run_state_machine(struct tcpm_port *port)
 				break;
 			}
 
-			if (res < 0) {
-				port->vdm_sm_running = false;
+			if (res < 0)
 				return;
-			}
 		}
 
 		port->vdm_state = VDM_STATE_SEND_MESSAGE;
@@ -1890,6 +1900,7 @@ static void vdm_run_state_machine(struct tcpm_port *port)
 		port->vdo_data[0] = port->vdo_retry;
 		port->vdo_count = 1;
 		port->vdm_state = VDM_STATE_READY;
+		tcpm_ams_finish(port);
 		break;
 	case VDM_STATE_BUSY:
 		port->vdm_state = VDM_STATE_ERR_TMOUT;
@@ -1967,7 +1978,7 @@ static void vdm_state_machine_work(struct work_struct *work)
 		 port->vdm_state != VDM_STATE_BUSY &&
 		 port->vdm_state != VDM_STATE_SEND_MESSAGE);
 
-	if (port->vdm_state == VDM_STATE_ERR_TMOUT)
+	if (port->vdm_state < VDM_STATE_READY)
 		port->vdm_sm_running = false;
 
 	mutex_unlock(&port->lock);
@@ -2373,8 +2384,7 @@ static void tcpm_pd_data_request(struct tcpm_port *port,
 			port->sink_caps[i] = le32_to_cpu(msg->payload[i]);
 		port->nr_sink_caps = cnt;
 		if (port->ams == GET_SINK_CAPABILITIES)
-			tcpm_pd_handle_state(port, ready_state(port), NONE_AMS,
-					     0);
+			tcpm_set_state(port, ready_state(port), 0);
 		break;
 	case PD_DATA_VENDOR_DEF:
 		tcpm_handle_vdm_request(port, msg->payload, cnt);
@@ -2518,6 +2528,16 @@ static void tcpm_pd_ctrl_request(struct tcpm_port *port,
 					     -EAGAIN : -EOPNOTSUPP);
 			tcpm_set_state(port, VCONN_SWAP_CANCEL, 0);
 			break;
+		case SRC_READY:
+		case SNK_READY:
+			if (port->vdm_state > VDM_STATE_READY) {
+				port->vdm_state = VDM_STATE_DONE;
+				if (tcpm_vdm_ams(port))
+					tcpm_ams_finish(port);
+				mod_delayed_work(port->wq, &port->vdm_state_machine,
+					 msecs_to_jiffies(0));
+				break;
+			}
 		default:
 			tcpm_pd_handle_state(port,
 					     port->pwr_role == TYPEC_SOURCE ?
@@ -4325,7 +4345,7 @@ static void run_state_machine(struct tcpm_port *port)
 		else if (tcpm_port_is_audio(port))
 			tcpm_set_state(port, AUDIO_ACC_ATTACHED,
 				       PD_T_CC_DEBOUNCE);
-		else if (tcpm_port_is_source(port))
+		else if (tcpm_port_is_source(port) && port->vbus_vsafe0v)
 			tcpm_set_state(port,
 				       tcpm_try_snk(port) ? SNK_TRY
 							  : SRC_ATTACHED,
@@ -5420,6 +5440,12 @@ static void _tcpm_pd_vbus_on(struct tcpm_port *port)
 {
 	tcpm_log_force(port, "VBUS on");
 	port->vbus_present = true;
+	/*
+	 * When vbus_present is true i.e. Voltage at VBUS is greater than VSAFE5V implicitly
+	 * states that vbus is not at VSAFE0V, hence clear the vbus_vsafe0v flag here.
+	 */
+	port->vbus_vsafe0v = false;
+
 	switch (port->state) {
 	case SNK_TRANSITION_SINK_VBUS:
 		port->explicit_contract = true;
@@ -5495,14 +5521,8 @@ static void _tcpm_pd_vbus_off(struct tcpm_port *port)
 	case SNK_HARD_RESET_SINK_OFF:
 		tcpm_set_state(port, SNK_HARD_RESET_WAIT_VBUS, 0);
 		break;
-	case SRC_HARD_RESET_VBUS_OFF:
-		/*
-		 * Mandatory tSrcRecovery time. So do nothing.
-		 */
-		break;
 	case HARD_RESET_SEND:
 		break;
-
 	case SNK_TRY:
 		/* Do nothing, waiting for timeout */
 		break;
@@ -5534,6 +5554,14 @@ static void _tcpm_pd_vbus_off(struct tcpm_port *port)
 		/* Do nothing, expected */
 		break;
 
+	case PR_SWAP_SNK_SRC_SOURCE_ON:
+		/*
+		 * Do nothing when vbus off notification is received.
+		 * TCPM can wait for PD_T_NEWSRC in PR_SWAP_SNK_SRC_SOURCE_ON
+		 * for the vbus source to ramp up.
+		 */
+		break;
+
 	case PORT_RESET_WAIT_OFF:
 		tcpm_set_state(port, tcpm_default_state(port), 0);
 		break;
@@ -5553,6 +5581,28 @@ static void _tcpm_pd_vbus_off(struct tcpm_port *port)
 		if (port->pwr_role == TYPEC_SINK &&
 		    port->attached)
 			tcpm_set_state(port, SNK_UNATTACHED, 0);
+		break;
+	}
+}
+
+static void _tcpm_pd_vbus_vsafe0v(struct tcpm_port *port)
+{
+	tcpm_log_force(port, "VBUS VSAFE0V");
+	port->vbus_vsafe0v = true;
+	switch (port->state) {
+	case SRC_HARD_RESET_VBUS_OFF:
+		/*
+		 * After establishing the vSafe0V voltage condition on VBUS, the Source Shall wait
+		 * tSrcRecover before re-applying VCONN and restoring VBUS to vSafe5V.
+		 */
+		tcpm_set_state(port, SRC_HARD_RESET_VBUS_ON, PD_T_SRC_RECOVER);
+		break;
+	case SRC_ATTACH_WAIT:
+		if (tcpm_port_is_source(port))
+			tcpm_set_state(port, tcpm_try_snk(port) ? SNK_TRY : SRC_ATTACHED,
+				       PD_T_CC_DEBOUNCE);
+		break;
+	default:
 		break;
 	}
 }
@@ -5593,10 +5643,19 @@ static void tcpm_pd_event_handler(struct work_struct *work)
 			bool vbus;
 
 			vbus = port->tcpc->get_vbus(port->tcpc);
-			if (vbus)
+			if (vbus) {
 				_tcpm_pd_vbus_on(port);
-			else
+			} else {
 				_tcpm_pd_vbus_off(port);
+				/*
+				 * When TCPC does not support detecting vsafe0v voltage level,
+				 * treat vbus absent as vsafe0v. Else invoke is_vbus_vsafe0v
+				 * to see if vbus has discharge to VSAFE0V.
+				 */
+				if (!port->tcpc->is_vbus_vsafe0v ||
+				    port->tcpc->is_vbus_vsafe0v(port->tcpc))
+					_tcpm_pd_vbus_vsafe0v(port);
+			}
 		}
 		if (events & TCPM_CC_EVENT) {
 			enum typec_cc_status cc1, cc2;
@@ -6038,6 +6097,24 @@ static void tcpm_init(struct tcpm_port *port)
 	port->vbus_present = port->tcpc->get_vbus(port->tcpc);
 	if (port->vbus_present)
 		port->vbus_never_low = true;
+
+	/*
+	 * 1. When vbus_present is true, voltage on VBUS is already at VSAFE5V.
+	 * So implicitly vbus_vsafe0v = false.
+	 *
+	 * 2. When vbus_present is false and TCPC does NOT support querying
+	 * vsafe0v status, then, it's best to assume vbus is at VSAFE0V i.e.
+	 * vbus_vsafe0v is true.
+	 *
+	 * 3. When vbus_present is false and TCPC does support querying vsafe0v,
+	 * then, query tcpc for vsafe0v status.
+	 */
+	if (port->vbus_present)
+		port->vbus_vsafe0v = false;
+	else if (!port->tcpc->is_vbus_vsafe0v)
+		port->vbus_vsafe0v = true;
+	else
+		port->vbus_vsafe0v = port->tcpc->is_vbus_vsafe0v(port->tcpc);
 
 	tcpm_set_state(port, tcpm_default_state(port), 0);
 

@@ -148,7 +148,13 @@ struct tcpc_config {
  *		detected.
  * @set_in_hard_reset:
  *		Optional; Called to notify that hard reset is in progress.
- * @mux:	Pointer to multiplexer data
+ * @mux:	Pointer to multiplexer data.
+ * @is_vbus_vsafe0v:
+ *		Optional; TCPCI spec based TCPC implementations are expected to
+ *		detect VSAFE0V voltage level at vbus. When detection of VSAFE0V
+ *		is supported by TCPC, set this callback for TCPM to query
+ *		whether vbus is at VSAFE0V when needed.
+ *		Returns true when vbus is at VSAFE0V, false otherwise.
  */
 struct tcpc_dev {
 	const struct tcpc_config *config;
@@ -175,13 +181,14 @@ struct tcpc_dev {
 			      enum typec_cc_status cc);
 	int (*try_role)(struct tcpc_dev *dev, int role);
 	int (*pd_transmit)(struct tcpc_dev *dev, enum tcpm_transmit_type type,
-			   const struct pd_message *msg);
+			   const struct pd_message *msg, unsigned int negotiated_rev);
 	int (*set_in_pr_swap)(struct tcpc_dev *dev, bool pr_swap);
 	void (*set_pd_capable)(struct tcpc_dev *dev, bool capable);
 	void (*set_in_hard_reset)(struct tcpc_dev *dev, bool status);
 	void (*log_rtc)(struct tcpc_dev *dev);
 	int (*set_suspend_supported)(struct tcpc_dev *dev,
 				     bool suspend_supported);
+	bool (*is_vbus_vsafe0v)(struct tcpc_dev *dev);
 	bool fixed_5V3A;
 };
 

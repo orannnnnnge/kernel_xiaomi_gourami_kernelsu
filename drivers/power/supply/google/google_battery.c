@@ -251,8 +251,6 @@ struct batt_drv {
 
 	const char *fg_psy_name;
 	struct power_supply *fg_psy;
-	const char *bms_psy_name;
-	struct power_supply *bms_psy;
 	struct notifier_block fg_nb;
 
 	struct delayed_work init_work;
@@ -407,8 +405,7 @@ static int psy_changed(struct notifier_block *nb,
 		return NOTIFY_OK;
 
 	if (action == PSY_EVENT_PROP_CHANGED &&
-	    (!strcmp(psy->desc->name, batt_drv->fg_psy_name)) &&
-	    (!strcmp(psy->desc->name, batt_drv->bms_psy_name))) {
+	    (!strcmp(psy->desc->name, batt_drv->fg_psy_name))) {
 		mod_delayed_work(system_wq, &batt_drv->batt_work, 0);
 	}
 
@@ -5014,7 +5011,6 @@ static void google_battery_work(struct work_struct *work)
 	struct batt_drv *batt_drv =
 	    container_of(work, struct batt_drv, batt_work.work);
 	struct power_supply *fg_psy = batt_drv->fg_psy;
-	struct power_supply *bms_psy = batt_drv->bms_psy;
 	struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
 	int update_interval = batt_drv->batt_update_interval;
 	const int prev_ssoc = ssoc_get_capacity(ssoc_state);
@@ -5028,7 +5024,7 @@ static void google_battery_work(struct work_struct *work)
 	/* chg_lock protect msc_logic */
 	mutex_lock(&batt_drv->chg_lock);
 
-	present = GPSY_GET_PROP(bms_psy, POWER_SUPPLY_PROP_PRESENT);
+	present = GPSY_GET_PROP(fg_psy, POWER_SUPPLY_PROP_PRESENT);
 	if (present && !batt_drv->batt_present) {
 		batt_drv->batt_present = true;
 		notify_psy_changed = true;
@@ -5041,7 +5037,7 @@ static void google_battery_work(struct work_struct *work)
 		goto reschedule;
 	}
 
-	fg_status = GPSY_GET_INT_PROP(bms_psy, POWER_SUPPLY_PROP_STATUS, &ret);
+	fg_status = GPSY_GET_INT_PROP(fg_psy, POWER_SUPPLY_PROP_STATUS, &ret);
 	if (ret < 0) {
 		mutex_unlock(&batt_drv->chg_lock);
 		goto reschedule;
@@ -5257,7 +5253,7 @@ static int gbatt_get_status(struct batt_drv *batt_drv,
 		return 0;
 	}
 
-	err = power_supply_get_property(batt_drv->bms_psy,
+	err = power_supply_get_property(batt_drv->fg_psy,
 					POWER_SUPPLY_PROP_STATUS,
 					val);
 	if (err != 0)
@@ -5732,7 +5728,6 @@ static void google_battery_init_work(struct work_struct *work)
 						 init_work.work);
 	struct device_node *node = batt_drv->device->of_node;
 	struct power_supply *fg_psy = batt_drv->fg_psy;
-	struct power_supply *bms_psy = batt_drv->bms_psy;
 	int ret = 0;
 
 	batt_rl_reset(batt_drv);
@@ -5749,27 +5744,19 @@ static void google_battery_init_work(struct work_struct *work)
 	mutex_init(&batt_drv->cc_data.lock);
 
 	if (!batt_drv->fg_psy) {
+
 		fg_psy = power_supply_get_by_name(batt_drv->fg_psy_name);
 		if (!fg_psy) {
 			pr_info("failed to get \"%s\" power supply, retrying...\n",
 				batt_drv->fg_psy_name);
 			goto retry_init_work;
 		}
+
 		batt_drv->fg_psy = fg_psy;
 	}
 
-	if (!batt_drv->bms_psy) {
-		bms_psy = power_supply_get_by_name(batt_drv->bms_psy_name);
-		if (!bms_psy) {
-			pr_info("failed to get \"%s\" power supply, retrying...\n",
-				batt_drv->bms_psy_name);
-			goto retry_init_work;
-		}
-		batt_drv->bms_psy = bms_psy;
-	}
-
 	if (!batt_drv->batt_present) {
-		ret = GPSY_GET_PROP(bms_psy, POWER_SUPPLY_PROP_PRESENT);
+		ret = GPSY_GET_PROP(fg_psy, POWER_SUPPLY_PROP_PRESENT);
 		if (ret == -EAGAIN)
 			goto retry_init_work;
 
@@ -5982,7 +5969,7 @@ static struct thermal_zone_of_device_ops google_battery_tz_ops = {
 
 static int google_battery_probe(struct platform_device *pdev)
 {
-	const char *fg_psy_name, *bms_psy_name, *psy_name = NULL;
+	const char *fg_psy_name, *psy_name = NULL;
 	struct batt_drv *batt_drv;
 	int ret;
 	struct power_supply_config psy_cfg = {};
@@ -6000,21 +5987,9 @@ static int google_battery_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	ret = of_property_read_string(pdev->dev.of_node,
-				      "google,bms-psy-name", &bms_psy_name);
-	if (ret != 0) {
-		pr_err("cannot read google,bms-psy-name, ret=%d\n", ret);
-		return -EINVAL;
-	}
-
 	batt_drv->fg_psy_name =
 	    devm_kstrdup(&pdev->dev, fg_psy_name, GFP_KERNEL);
 	if (!batt_drv->fg_psy_name)
-		return -ENOMEM;
-
-	batt_drv->bms_psy_name =
-	    devm_kstrdup(&pdev->dev, bms_psy_name, GFP_KERNEL);
-	if (!batt_drv->bms_psy_name)
 		return -ENOMEM;
 
 	/* change name and type for debug/test */
@@ -6123,9 +6098,6 @@ static int google_battery_remove(struct platform_device *pdev)
 
 	if (batt_drv->fg_psy)
 		power_supply_put(batt_drv->fg_psy);
-
-	if (batt_drv->bms_psy)
-		power_supply_put(batt_drv->bms_psy);
 
 	gbms_free_chg_profile(&batt_drv->chg_profile);
 
