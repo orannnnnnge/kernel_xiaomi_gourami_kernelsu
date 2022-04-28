@@ -52,4 +52,15 @@
 			qcom,init-mode = <RPMH_REGULATOR_MODE_LPM>;
 		};
 	};
+
+	rpmh-regulator-bobc1 {
+		qcom,supported-modes =
+			<RPMH_REGULATOR_MODE_AUTO
+			RPMH_REGULATOR_MODE_HPM>;
+		qcom,mode-threshold-currents = <0 2000000>;
+
+		BOB: pm8150a_bob: regulator-pm8150a-bob {
+			qcom,init-mode = <RPMH_REGULATOR_MODE_AUTO>;
+		};
+	};
 };

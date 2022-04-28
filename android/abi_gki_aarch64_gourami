@@ -1458,6 +1458,8 @@
   setattr_prepare
   set_nlink
   sync_blockdev
+  sync_blockdev_range
+  __sync_dirty_buffer
   sync_dirty_buffer
   sync_mapping_buffers
   truncate_pagecache

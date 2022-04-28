@@ -18,7 +18,7 @@
 &google_battery {
 	google,ttf-adapter = <3000>;
 	google,ttf-soc-table = <50 58 76 83 87 91 93 100>;
-	google,ttf-elap-table = <38 44 58 76 89 121 165 178>;
+	google,ttf-elap-table = <38 44 58 76 89 121 165 191>;
 	google,ttf-tier-table = <0 59 77>;
 };
 

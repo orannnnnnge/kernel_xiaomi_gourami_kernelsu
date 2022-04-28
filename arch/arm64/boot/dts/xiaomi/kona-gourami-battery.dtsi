@@ -16,6 +16,7 @@
 		google_bms: google,bms {
 			compatible = "google,sm8150_bms";
 			google,psy-name = "sm8150_bms";
+			vbob-supply = <&BOB>;
 
 			google,chg-term-voltage = <4400>;
 
@@ -50,21 +51,22 @@
 
 &pm8150b_charger {
 	io-channels = <&pm8150b_vadc ADC_USB_IN_V_16>,
-			<&pm8150b_vadc ADC_MID_CHG_DIV6>,
-			<&pm8150b_vadc ADC_USB_IN_I>,
-			<&pm8150b_vadc ADC_SBUx>,
-			<&pm8150b_vadc ADC_VPH_PWR>,
-			<&pm8150b_vadc ADC_CHG_TEMP>;
+		      <&pm8150b_vadc ADC_MID_CHG_DIV6>,
+		      <&pm8150b_vadc ADC_USB_IN_I>,
+		      <&pm8150b_vadc ADC_CHG_TEMP>,
+		      <&pm8150b_vadc ADC_AMUX_THM3_PU2>,
+		      <&pm8150b_vadc ADC_SBUx>,
+		      <&pm8150b_vadc ADC_VPH_PWR>;
 	io-channel-names = "usb_in_voltage",
-			"mid_voltage",
-			"usb_in_current",
-			"sbux_res",
-			"vph_voltage",
-			"chg_temp";
+			   "mid_voltage",
+			   "usb_in_current",
+			   "chg_temp",
+			   "conn_temp",
+			   "sbux_res",
+			   "vph_voltage";
 	qcom,auto-recharge-soc = <97>;
 	qcom,charger-temp-max = <800>;
 	qcom,smb-temp-max = <800>;
-	qcom,chg-term-current-ma = <(-80)>;
 	google,batt_psy_disable;
 	google,wdog_snarl_disable;
 	google,usb-port-tz-name = "usbc-therm-adc";
@@ -96,7 +98,7 @@
 	qcom,fg-cutoff-current = <200>;
 	qcom,fg-cutoff-voltage = <3300>;
 	qcom,fg-empty-voltage = <3000>;
-	qcom,fg-sys-term-current = <(-456)>;
+	qcom,fg-sys-term-current = <(-580)>;
 	qcom,five-pin-battery;
 
 	qcom,fg-force-load-profile;
@@ -113,15 +115,21 @@
 
 		/* charge table for gourami */
 		google,chg-temp-limits = <0 100 200 420 460 480 550>;
-		google,chg-cv-limits = <4200000 4300000 4450000>;
+		google,chg-cv-limits = <4200000 4300000 4390000 4420000 4450000>;
 		google,chg-cc-limits = <
-			30  10   0
-			50  30  30
-			100  70  50
-			80  50  50
-			50  50   0
-			30   0   0
+		 	30  10   0   0   0
+		 	50  30  30  27  13
+			100  70  55  27  13
+		 	80  50  50  27  13
+		 	50  50   0   0   0
+			30   0   0   0   0
 		>;
+		/* micro-adjust cc_max to avoid vpack exceeding spec criteria */
+		/* vpack tolerance: 6675uV = 4450mV * 15 / (10 * 1000) */
+		google,chg-last-tier-vpack-tolerance = <6675>;
+		/* decrease and terminal current unit : uA */
+		google,chg-last-tier-dec-current = <50000>;
+		google,chg-last-tier-term-current = <190000>;
 
 		google,aacr-ref-cycles = <100 200 500 800>;
 		google,aacr-ref-fade10 = <0 5 35 65>;

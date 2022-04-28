@@ -50,7 +50,7 @@ struct bms_dev {
 	bool				fcc_stepper_enable;
 	u32				rradc_base;
 	int				chg_term_voltage;
-
+	struct regulator		*bob_vreg;
 };
 
 struct bias_config {
@@ -183,6 +183,20 @@ static int sm8150_rd8(struct regmap *pmic_regmap, int addr, u8 *val)
 
 /* ------------------------------------------------------------------------- */
 
+static void vbob_regulator_update(struct bms_dev *chg, bool on)
+{
+	int rc = 0;
+	/* load is measured as uA */
+	uint32_t load = (on) ? 1000000 : 0;
+
+	rc = regulator_set_load(chg->bob_vreg, load);
+	if (rc < 0) {
+		dev_err(chg->dev, "Can't set load %d uA to vbob. (%d)\n", load, rc);
+		return;
+	}
+	dev_dbg(chg->dev, "vbob-supply is voted by %d uA.\n", load);
+}
+
 static irqreturn_t sm8150_chg_state_change_irq_handler(int irq, void *data)
 {
 	struct smb_irq_data *irq_data = data;
@@ -201,6 +215,8 @@ static irqreturn_t sm8150_chg_state_change_irq_handler(int irq, void *data)
 	}
 
 	stat = stat & BATTERY_CHARGER_STATUS_MASK;
+	vbob_regulator_update(chg, SM8150_TERMINATE_CHARGE == stat);
+
 	power_supply_changed(chg->psy);
 	return IRQ_HANDLED;
 }
@@ -1418,6 +1434,20 @@ static int bms_probe(struct platform_device *pdev)
 	rc = power_supply_reg_notifier(&bms->nb);
 	if (rc < 0) {
 		pr_err("Couldn't register psy notifier rc = %d\n", rc);
+		goto exit;
+	}
+
+	bms->bob_vreg = devm_regulator_get(&pdev->dev, "vbob");
+	if (IS_ERR_OR_NULL(bms->bob_vreg)) {
+		pr_err("Can't find vbob-supply\n");
+		rc = PTR_ERR(bms->bob_vreg);
+		goto exit;
+	}
+
+	rc = regulator_enable(bms->bob_vreg);
+	if (rc < 0) {
+		pr_err("Can't enable vbob-supply(%d)\n", rc);
+		rc = PTR_ERR(bms->bob_vreg);
 		goto exit;
 	}
 
