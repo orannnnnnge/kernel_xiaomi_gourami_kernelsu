@@ -906,6 +906,7 @@ extern struct qmi_elem_info wlfw_qdss_trace_mem_info_req_msg_v01_ei[];
 struct wlfw_qdss_trace_mem_info_resp_msg_v01 {
 	struct qmi_response_type_v01 resp;
 };
+
 #define WLFW_QDSS_TRACE_MEM_INFO_RESP_MSG_V01_MAX_MSG_LEN 7
 extern struct qmi_elem_info wlfw_qdss_trace_mem_info_resp_msg_v01_ei[];
 
@@ -1065,6 +1066,7 @@ extern struct qmi_elem_info wlfw_get_info_req_msg_v01_ei[];
 struct wlfw_get_info_resp_msg_v01 {
 	struct qmi_response_type_v01 resp;
 };
+
 #define WLFW_GET_INFO_RESP_MSG_V01_MAX_MSG_LEN 7
 extern struct qmi_elem_info wlfw_get_info_resp_msg_v01_ei[];
 

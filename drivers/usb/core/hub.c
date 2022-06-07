@@ -147,7 +147,7 @@ struct usb_hub *usb_hub_to_struct_hub(struct usb_device *hdev)
 int usb_device_supports_lpm(struct usb_device *udev)
 {
 	/* Some devices have trouble with LPM */
-	if (udev->quirks & USB_QUIRK_NO_LPM)
+	if (IS_ENABLED(CONFIG_BOARD_XIAOMI) || udev->quirks & USB_QUIRK_NO_LPM)
 		return 0;
 
 	/* USB 2.1 (and greater) devices indicate LPM support through
@@ -4537,7 +4537,8 @@ static void hub_set_initial_usb2_lpm_policy(struct usb_device *udev)
 	if ((udev->bos->ext_cap->bmAttributes & cpu_to_le32(USB_BESL_SUPPORT)) ||
 			connect_type == USB_PORT_CONNECT_TYPE_HARD_WIRED) {
 		udev->usb2_hw_lpm_allowed = 1;
-		usb_enable_usb2_hardware_lpm(udev);
+		if (!IS_ENABLED(CONFIG_BOARD_XIAOMI))
+			usb_enable_usb2_hardware_lpm(udev);
 	}
 }
 

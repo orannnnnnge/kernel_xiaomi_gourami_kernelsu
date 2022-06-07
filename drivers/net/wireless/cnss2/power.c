@@ -726,6 +726,16 @@ int cnss_get_pinctrl(struct cnss_plat_data *plat_priv)
 		pinctrl_info->sw_ctrl_gpio = -EINVAL;
 	}
 
+	if (of_find_property(dev->of_node, SW_CTRL_GPIO, NULL)) {
+		pinctrl_info->sw_ctrl_gpio = of_get_named_gpio(dev->of_node,
+							       SW_CTRL_GPIO,
+							       0);
+		cnss_pr_dbg("Switch control GPIO: %d\n",
+			    pinctrl_info->sw_ctrl_gpio);
+	} else {
+		pinctrl_info->sw_ctrl_gpio = -EINVAL;
+	}
+
 	return 0;
 out:
 	return ret;

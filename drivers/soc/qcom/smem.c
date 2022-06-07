@@ -1061,15 +1061,27 @@ static int qcom_smem_map_toc(struct qcom_smem *smem, struct device *dev,
 	return 0;
 }
 
-static int qcom_smem_mamp_legacy(struct qcom_smem *smem)
+static int qcom_smem_map_legacy(struct qcom_smem *smem)
 {
 	struct smem_header *header;
 	u32 phys_addr;
 	u32 p_size;
+	unsigned long flags;
+	int ret;
 
 	phys_addr = smem->regions[0].aux_base;
-	header = smem->regions[0].virt_base;
-	p_size = header->available;
+	header = (struct smem_header __iomem *)smem->regions[0].virt_base;
+
+	ret = hwspin_lock_timeout_irqsave(smem->hwlock,
+					  HWSPINLOCK_TIMEOUT,
+					  &flags);
+	if (ret)
+		return ret;
+
+	p_size = readl_relaxed(&header->available) +
+			readl_relaxed(&header->free_offset);
+
+	hwspin_unlock_irqrestore(smem->hwlock, &flags);
 
 	/* unmap previously mapped starting 4k for smem header */
 	devm_iounmap(smem->dev, smem->regions[0].virt_base);
@@ -1099,7 +1111,7 @@ static int qcom_smem_probe(struct platform_device *pdev)
 		num_regions++;
 
 	array_size = num_regions * sizeof(struct smem_region);
-	smem = kzalloc(sizeof(*smem) + array_size, GFP_KERNEL);
+	smem = devm_kzalloc(&pdev->dev, sizeof(*smem) + array_size, GFP_KERNEL);
 	if (!smem)
 		return -ENOMEM;
 
@@ -1108,113 +1120,63 @@ static int qcom_smem_probe(struct platform_device *pdev)
 
 	ret = qcom_smem_map_toc(smem, &pdev->dev, "memory-region", 0);
 	if (ret)
-		goto release;
+		return ret;
 
 	if (num_regions > 1 && (ret = qcom_smem_map_memory(smem, &pdev->dev,
 					"qcom,rpm-msg-ram", 1)))
-		goto release;
+		return ret;
 
 	header = smem->regions[0].virt_base;
 	if (le32_to_cpu(header->initialized) != 1 ||
 	    le32_to_cpu(header->reserved)) {
 		dev_err(&pdev->dev, "SMEM is not initialized by SBL\n");
-		ret = -EINVAL;
-		goto release;
+		return -EINVAL;
 	}
+
+	hwlock_id = of_hwspin_lock_get_id(pdev->dev.of_node, 0);
+	if (hwlock_id < 0) {
+		if (hwlock_id != -EPROBE_DEFER)
+			dev_err(&pdev->dev, "failed to retrieve hwlock\n");
+		return hwlock_id;
+	}
+
+	smem->hwlock = hwspin_lock_request_specific(hwlock_id);
+	if (!smem->hwlock)
+		return -ENXIO;
 
 	version = qcom_smem_get_sbl_version(smem);
 	switch (version >> 16) {
 	case SMEM_GLOBAL_PART_VERSION:
 		ret = qcom_smem_set_global_partition(smem);
 		if (ret < 0)
-			goto release;
+			return ret;
 		smem->item_count = qcom_smem_get_item_count(smem);
 		break;
 	case SMEM_GLOBAL_HEAP_VERSION:
-		qcom_smem_mamp_legacy(smem);
+		qcom_smem_map_legacy(smem);
 		smem->item_count = SMEM_ITEM_COUNT;
 		break;
 	default:
 		dev_err(&pdev->dev, "Unsupported SMEM version 0x%x\n", version);
-		ret = -EINVAL;
-		goto release;
+		return -EINVAL;
 	}
 
 	ret = qcom_smem_enumerate_partitions(smem, SMEM_HOST_APPS);
 	if (ret < 0 && ret != -ENOENT)
-		goto release;
-
-	hwlock_id = of_hwspin_lock_get_id(pdev->dev.of_node, 0);
-	if (hwlock_id < 0) {
-		if (hwlock_id != -EPROBE_DEFER)
-			dev_err(&pdev->dev, "failed to retrieve hwlock\n");
-		ret = hwlock_id;
-		goto release;
-	}
-
-	smem->hwlock = hwspin_lock_request_specific(hwlock_id);
-	if (!smem->hwlock) {
-		ret = -ENXIO;
-		goto release;
-	}
+		return ret;
 
 	__smem = smem;
 
 	return 0;
-
-release:
-	kfree(smem);
-	return ret;
 }
 
 static int qcom_smem_remove(struct platform_device *pdev)
 {
 	hwspin_lock_free(__smem->hwlock);
-	/*
-	 * In case of Hibernation Restore __smem object is still valid
-	 * and we call probe again so same object get allocated again
-	 * that result into possible memory leak, hence explicitly freeing
-	 * it here.
-	 */
-	kfree(__smem);
 	__smem = NULL;
 
 	return 0;
 }
-
-static int qcom_smem_freeze(struct device *dev)
-{
-	struct platform_device *pdev = container_of(dev, struct
-					platform_device, dev);
-	dev_dbg(dev, "%s\n", __func__);
-
-	qcom_smem_remove(pdev);
-
-	return 0;
-}
-
-static int qcom_smem_restore(struct device *dev)
-{
-	int ret = 0;
-	struct platform_device *pdev = container_of(dev, struct
-					platform_device, dev);
-	dev_dbg(dev, "%s\n", __func__);
-
-	/*
-	 * SMEM related information has to fetched again
-	 * during resuming from Hibernation, Hence call probe.
-	 */
-	ret = qcom_smem_probe(pdev);
-	if (ret)
-		dev_err(dev, "Error getting SMEM information\n");
-	return ret;
-}
-
-static const struct dev_pm_ops qcom_smem_pm_ops = {
-	.freeze_late = qcom_smem_freeze,
-	.restore_early = qcom_smem_restore,
-	.thaw_early = qcom_smem_restore,
-};
 
 static const struct of_device_id qcom_smem_of_match[] = {
 	{ .compatible = "qcom,smem" },
@@ -1229,7 +1191,6 @@ static struct platform_driver qcom_smem_driver = {
 		.name = "qcom-smem",
 		.of_match_table = qcom_smem_of_match,
 		.suppress_bind_attrs = true,
-		.pm = &qcom_smem_pm_ops,
 	},
 };
 

@@ -179,6 +179,10 @@ struct batt_ssoc_state {
 
 	/* buff */
 	char ssoc_state_cstr[SSOC_STATE_BUF_SZ];
+
+	/* Save/Restore fake capacity */
+	bool save_soc_available;
+	u16 save_soc;
 };
 
 struct gbatt_ccbin_data {
@@ -244,6 +248,33 @@ enum batt_aacr_state {
 	BATT_AACR_MAX,
 };
 
+#define BATT_TEMP_RECORD_THR 3
+/* discharge saved after charge */
+#define SD_CHG_START 0
+#define SD_DISCHG_START BATT_TEMP_RECORD_THR
+#define BATT_SD_SAVE_SIZE (BATT_TEMP_RECORD_THR * 2)
+#define BATT_SD_MAX_HOURS 15120 // 90 weeks
+struct swelling_data {
+	/* Time in different temperature */
+	bool is_enable;
+	u32 temp_thr[BATT_TEMP_RECORD_THR];
+	u32 soc_thr[BATT_TEMP_RECORD_THR];
+	/*
+	 * cumulative time array format:
+	 * | saved  | 0                | 1                | 2                |
+	 * |--------| Charge           | Charge           | Charge           |
+	 * | Content| > 30degC & > 90% | > 35degC & > 90% | > 40degC & > 95% |
+	 *
+	 * | saved  | 3                | 4                | 5                |
+	 * |--------| Discharge        | Discharge        | Discharge        |
+	 * | Content| > 30degC & > 90% | > 35degC & > 90% | > 40degC & > 95% |
+	 */
+	u16 saved[BATT_SD_SAVE_SIZE];
+	ktime_t chg[BATT_TEMP_RECORD_THR];
+	ktime_t dischg[BATT_TEMP_RECORD_THR];
+	ktime_t last_update;
+};
+
 /* battery driver state */
 struct batt_drv {
 	struct device *device;
@@ -286,6 +317,8 @@ struct batt_drv {
 	struct gbatt_ccbin_data cc_data;
 	/* fg cycle count */
 	int cycle_count;
+	/* for testing */
+	int fake_aacr_cc;
 
 	/* props */
 	int soh;
@@ -363,11 +396,14 @@ struct batt_drv {
 	enum batt_aacr_state aacr_state;
 	int aacr_cycle_grace;
 	int aacr_cycle_max;
+
+	struct swelling_data sd;
 };
 
 static int batt_chg_tier_stats_cstr(char *buff, int size,
 				    const struct gbms_ce_tier_stats *tier_stat,
 				    bool verbose);
+static int gbatt_get_capacity(struct batt_drv *batt_drv);
 
 static inline void batt_update_cycle_count(struct batt_drv *batt_drv)
 {
@@ -1782,12 +1818,13 @@ static int batt_chg_stats_cstr(char *buff, int size,
 				ce_data->adapter_details.ad_voltage * 100,
 				ce_data->adapter_details.ad_amperage * 100);
 
-	len += scnprintf(&buff[len], size - len, "%s%hu,%hu, %hu,%hu",
+	len += scnprintf(&buff[len], size - len, "%s%hu,%hu, %hu,%hu %u",
 				(verbose) ?  "\nS: " : ", ",
 				ce_data->charging_stats.ssoc_in,
 				ce_data->charging_stats.voltage_in,
 				ce_data->charging_stats.ssoc_out,
-				ce_data->charging_stats.voltage_out);
+				ce_data->charging_stats.voltage_out,
+				ce_data->chg_profile->capacity_ma);
 
 
 	if (verbose) {
@@ -2637,17 +2674,23 @@ static int aacr_get_capacity_at_cycle(const struct batt_drv *batt_drv,
 static u32 aacr_get_capacity(struct batt_drv *batt_drv)
 {
 	int capacity = batt_drv->battery_capacity;
+	int cycle_count;
+
+	if (batt_drv->fake_aacr_cc)
+		cycle_count = batt_drv->fake_aacr_cc;
+	else
+		cycle_count = batt_drv->cycle_count;
 
 	if (batt_drv->aacr_state == BATT_AACR_DISABLED)
 		goto exit_done;
 
-	if (batt_drv->cycle_count <= batt_drv->aacr_cycle_grace) {
+	if (cycle_count <= batt_drv->aacr_cycle_grace) {
 		batt_drv->aacr_state = BATT_AACR_UNDER_CYCLES;
 	} else {
 		int aacr_capacity;
 
 		aacr_capacity = aacr_get_capacity_at_cycle(batt_drv,
-						batt_drv->cycle_count);
+							   cycle_count);
 		if (aacr_capacity < 0) {
 			batt_drv->aacr_state = BATT_AACR_INVALID_CAP;
 		} else {
@@ -4590,6 +4633,28 @@ static ssize_t aacr_cycle_max_store(struct device *dev,
 
 static DEVICE_ATTR_RW(aacr_cycle_max);
 
+static ssize_t swelling_data_show(struct device *dev,
+				  struct device_attribute *attr, char *buf)
+{
+	struct power_supply *psy = container_of(dev, struct power_supply, dev);
+	struct batt_drv *batt_drv = power_supply_get_drvdata(psy);
+	struct swelling_data *sd = &batt_drv->sd;
+	int len = 0, i;
+
+	len += scnprintf(&buf[len], PAGE_SIZE - len,
+			 "temp/soc\tcharge(s)\tdischarge(s)\n");
+	for (i = 0; i < BATT_TEMP_RECORD_THR ; i++) {
+		len += scnprintf(&buf[len], PAGE_SIZE - len,
+				 "%d/%d\t%llu\t%llu\n",
+				 sd->temp_thr[i]/10, sd->soc_thr[i],
+				 sd->chg[i], sd->dischg[i]);
+	}
+
+	return len;
+}
+
+static DEVICE_ATTR_RO(swelling_data);
+
 static struct attribute *batt_attrs[] = {
 	&dev_attr_charge_stats.attr,
 	&dev_attr_charge_stats_actual.attr,
@@ -4613,6 +4678,7 @@ static struct attribute *batt_attrs[] = {
 	&dev_attr_aacr_state.attr,
 	&dev_attr_aacr_cycle_grace.attr,
 	&dev_attr_aacr_cycle_max.attr,
+	&dev_attr_swelling_data.attr,
 	NULL,
 };
 
@@ -4654,6 +4720,9 @@ static int batt_init_fs(struct batt_drv *batt_drv)
 		/* defender */
 		debugfs_create_u32("fake_capacity", 0600, de,
 				    &batt_drv->fake_capacity);
+		/* aacr test */
+		debugfs_create_u32("fake_aacr_cc", 0600, de,
+				   &batt_drv->fake_aacr_cc);
 
 		/* health charging */
 		debugfs_create_file("chg_health_thr_soc", 0600, de,
@@ -5002,6 +5071,102 @@ static void batt_history_data_collect(struct batt_drv *batt_drv)
 	}
 }
 
+/* save data in hours */
+#define SAVE_UNIT 3600
+static void gbatt_save_sd(struct swelling_data *sd)
+{
+	u16 sd_saved[BATT_SD_SAVE_SIZE];
+	bool update_save_data = false;
+	int i, j, ret = 0;
+
+	/* Change seconds to hours */
+	for (i = 0; i < BATT_TEMP_RECORD_THR; i++) {
+		j = i + SD_DISCHG_START;
+
+		sd_saved[i] = sd->chg[i] / SAVE_UNIT < BATT_SD_MAX_HOURS ?
+			      sd->chg[i] / SAVE_UNIT : BATT_SD_MAX_HOURS;
+
+		sd_saved[j] = sd->dischg[i] / SAVE_UNIT < BATT_SD_MAX_HOURS ?
+			      sd->dischg[i] / SAVE_UNIT : BATT_SD_MAX_HOURS;
+
+		if (sd_saved[i] > sd->saved[i] ||
+		    sd_saved[j] > sd->saved[j]) {
+			sd->saved[i] = sd_saved[i];
+			sd->saved[j] = sd_saved[j];
+			update_save_data = true;
+		}
+	}
+
+	if (!update_save_data)
+		return;
+
+	ret = gbms_storage_write(GBMS_TAG_STRD, &sd->saved, sizeof(sd->saved));
+	if (ret < 0)
+		pr_warn("Failed to save swelling data, ret=%d\n", ret);
+}
+
+static void gbatt_record_over_temp(struct batt_drv *batt_drv)
+{
+	struct swelling_data *sd = &batt_drv->sd;
+	struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
+	const bool charge = batt_drv->fg_status == POWER_SUPPLY_STATUS_CHARGING ||
+			    (batt_drv->fg_status == POWER_SUPPLY_STATUS_FULL &&
+			    !batt_drv->chg_done);
+	const int temp = batt_drv->batt_temp;
+	const int soc = ssoc_get_real(ssoc_state);
+	const ktime_t now = get_boot_sec();
+	const ktime_t elap = now - sd->last_update;
+	bool update_data = false;
+	int i;
+
+	for (i = 0; i < BATT_TEMP_RECORD_THR; i++) {
+		/*
+		 *  thresholds table:
+		 *  | i        | 0      | 1      | 2      |
+		 *  |----------|--------|--------|--------|
+		 *  | temp_thr | 30degC | 35degC | 40degC |
+		 *  | soc_thr  | 90%    | 90%    | 95%    |
+		 */
+		if (temp < sd->temp_thr[i] || soc < sd->soc_thr[i])
+			continue;
+
+		if (charge)
+			sd->chg[i] += elap;
+		else
+			sd->dischg[i] += elap;
+
+		update_data = true;
+	}
+
+	if (update_data)
+		gbatt_save_sd(&batt_drv->sd);
+
+	sd->last_update = now;
+}
+
+static int gbatt_save_capacity(struct batt_ssoc_state *ssoc_state)
+{
+	const int ui_soc = ssoc_get_capacity(ssoc_state);
+	const int gdf_soc = ssoc_get_real(ssoc_state);
+	int ret = 0, save_now;
+
+	if (!ssoc_state->save_soc_available)
+		return ret;
+
+	if (ui_soc == gdf_soc)
+		save_now = 0;
+	else
+		save_now = ui_soc;
+
+	if (ssoc_state->save_soc != (u16)save_now) {
+		ssoc_state->save_soc = (u16)save_now;
+		ret = gbms_storage_write(GBMS_TAG_RSOC, &ssoc_state->save_soc,
+					 sizeof(ssoc_state->save_soc));
+	}
+
+	return ret;
+}
+
 /*
  * poll the battery, run SOC%, dead battery, critical.
  * scheduled from psy_changed and from timer
@@ -5093,6 +5258,10 @@ static void google_battery_work(struct work_struct *work)
 		if (full && !batt_drv->batt_full)
 			bat_log_ttf_estimate("Full", ssoc, batt_drv);
 		batt_drv->batt_full = full;
+
+		ret = gbatt_save_capacity(&batt_drv->ssoc_state);
+		if (ret < 0)
+			pr_warn("write save_soc fail, ret=%d\n", ret);
 	}
 
 	/* TODO: poll other data here if needed */
@@ -5106,6 +5275,9 @@ static void google_battery_work(struct work_struct *work)
 		    batt_drv->batt_update_high_temp_threshold)
 			notify_psy_changed = true;
 	}
+
+	if (batt_drv->sd.is_enable)
+		gbatt_record_over_temp(batt_drv);
 
 	mutex_unlock(&batt_drv->batt_lock);
 
@@ -5300,6 +5472,30 @@ static int gbatt_get_capacity(struct batt_drv *batt_drv)
 	return capacity;
 }
 
+
+static void gbatt_reset_curve(struct batt_drv *batt_drv, int ssoc_cap)
+{
+	struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
+	const qnum_t cap = qnum_fromint(ssoc_cap);
+	const qnum_t gdf = ssoc_state->ssoc_gdf;
+	enum ssoc_uic_type type;
+
+	if (gdf < cap)
+		type = SSOC_UIC_TYPE_DSG;
+	else
+		type = SSOC_UIC_TYPE_CHG;
+
+	pr_info("reset curve at gdf=%d.%d cap=%d.%d type=%d\n",
+		qnum_toint(gdf), qnum_fracdgt(gdf),
+		qnum_toint(cap), qnum_fracdgt(cap),
+		type);
+
+	/* current is the drop point on the discharge curve */
+	ssoc_change_curve_at_gdf(ssoc_state, gdf, cap, type);
+	ssoc_work(ssoc_state, batt_drv->fg_psy);
+	dump_ssoc_state(ssoc_state, batt_drv->ssoc_log);
+}
+
 /* splice the curve at point when the SSOC is removed */
 static void gbatt_set_capacity(struct batt_drv *batt_drv, int capacity)
 {
@@ -5309,26 +5505,7 @@ static void gbatt_set_capacity(struct batt_drv *batt_drv, int capacity)
 	if (batt_drv->batt_health != POWER_SUPPLY_HEALTH_OVERHEAT) {
 		/* just set the value if not in overheat  */
 	} else if (capacity < 0 && batt_drv->fake_capacity >= 0) {
-		struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
-		const qnum_t cap = qnum_fromint(batt_drv->fake_capacity);
-		const qnum_t gdf = ssoc_state->ssoc_gdf;
-		enum ssoc_uic_type type;
-
-		if (gdf < qnum_fromint(batt_drv->fake_capacity)) {
-			type = SSOC_UIC_TYPE_DSG;
-		} else {
-			type = SSOC_UIC_TYPE_CHG;
-		}
-
-		pr_info("reset curve at gdf=%d.%d cap=%d.%d type=%d\n",
-			qnum_toint(gdf), qnum_fracdgt(gdf),
-			qnum_toint(cap), qnum_fracdgt(cap),
-			type);
-
-		/* current is the drop point on the discharge curve */
-		ssoc_change_curve_at_gdf(ssoc_state, gdf, cap, type);
-		ssoc_work(ssoc_state, batt_drv->fg_psy);
-		dump_ssoc_state(ssoc_state, batt_drv->ssoc_log);
+		gbatt_reset_curve(batt_drv, batt_drv->fake_capacity);
 	} else if (capacity > 0) {
 		/* TODO: convergence to the new capacity? */
 	}
@@ -5349,6 +5526,36 @@ static int gbatt_set_health(struct batt_drv *batt_drv, int health)
 		msc_logic_health(batt_drv);
 
 	return 0;
+}
+
+#define RESTORE_SOC_THRESHOLD	5
+static int gbatt_restore_capacity(struct batt_drv *batt_drv)
+{
+	struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
+	int ret = 0, save_soc, gdf_soc, ori_target;
+
+	ret = gbms_storage_read(GBMS_TAG_RSOC, &ssoc_state->save_soc,
+						sizeof(ssoc_state->save_soc));
+
+	if (ret < 0)
+		return ret;
+
+	if (ssoc_state->save_soc) {
+		save_soc = (int)ssoc_state->save_soc;
+		gdf_soc = qnum_toint(ssoc_state->ssoc_gdf);
+		pr_info("save_soc:%d, gdf:%d", save_soc, gdf_soc);
+
+		if ((save_soc < gdf_soc) ||
+		    (save_soc - gdf_soc) > RESTORE_SOC_THRESHOLD)
+			return ret;
+
+		ori_target = ssoc_state->ssoc_rl_state.rl_track_target;
+		ssoc_state->ssoc_rl_state.rl_track_target = 1;
+		gbatt_reset_curve(batt_drv, save_soc);
+		ssoc_state->ssoc_rl_state.rl_track_target = ori_target;
+	}
+
+	return ret;
 }
 
 static int gbatt_get_property(struct power_supply *psy,
@@ -5722,6 +5929,34 @@ static struct power_supply_desc gbatt_psy_desc = {
 
 /* ------------------------------------------------------------------------ */
 
+static int batt_init_sd(struct swelling_data *sd)
+{
+	int ret = 0, i, j;
+
+	if (!sd->is_enable)
+		return 0;
+
+	ret = gbms_storage_read(GBMS_TAG_STRD, &sd->saved,
+				sizeof(sd->saved));
+	if (ret < 0)
+		return ret;
+
+	if (sd->saved[SD_CHG_START] == 0xFFFF) {
+		/* Empty EEPROM, initialize sd_saved[] */
+		for (i = 0; i < BATT_SD_SAVE_SIZE; i++)
+			sd->saved[i] = 0;
+	} else {
+		/* Available data, restore */
+		for (i = 0; i < BATT_TEMP_RECORD_THR; i++) {
+			j = i + SD_DISCHG_START;
+			sd->chg[i] = sd->saved[i] * SAVE_UNIT;
+			sd->dischg[i] = sd->saved[j] * SAVE_UNIT;
+		}
+	}
+
+	return ret;
+}
+
 static void google_battery_init_work(struct work_struct *work)
 {
 	struct batt_drv *batt_drv = container_of(work, struct batt_drv,
@@ -5799,6 +6034,23 @@ static void google_battery_init_work(struct work_struct *work)
 		batt_drv->health_safety_margin =
 					DEFAULT_HEALTH_SAFETY_MARGIN_SEC;
 
+	ret = of_property_read_u32_array(node, "google,temp-record-thr",
+					 batt_drv->sd.temp_thr,
+					 BATT_TEMP_RECORD_THR);
+	if (ret == 0) {
+		ret = of_property_read_u32_array(node, "google,soc-record-thr",
+						 batt_drv->sd.soc_thr,
+						 BATT_TEMP_RECORD_THR);
+		if (ret == 0)
+			batt_drv->sd.is_enable = true;
+	}
+
+	ret = batt_init_sd(&batt_drv->sd);
+	if (ret < 0) {
+		pr_err("Unable to read swelling data, ret=%d\n", ret);
+		batt_drv->sd.is_enable = false;
+	}
+
 	/* cycle count is cached, here since SSOC, chg_profile might use it */
 	batt_update_cycle_count(batt_drv);
 
@@ -5807,6 +6059,12 @@ static void google_battery_init_work(struct work_struct *work)
 		goto retry_init_work;
 
 	dump_ssoc_state(&batt_drv->ssoc_state, batt_drv->ssoc_log);
+
+	ret = gbatt_restore_capacity(batt_drv);
+	if (ret < 0)
+		pr_warn("unable to restore capacity, ret=%d\n", ret);
+	else
+		batt_drv->ssoc_state.save_soc_available = true;
 
 	/* chg_profile will use cycle_count when aacr is enabled */
 	ret = batt_init_chg_profile(batt_drv);
