@@ -1490,6 +1490,9 @@ static void msm_vidc_comm_update_ctrl_limits(struct msm_vidc_inst *inst)
 		msm_vidc_comm_update_ctrl(inst,
 				V4L2_CID_MPEG_VIDEO_B_FRAMES,
 				&inst->capability.cap[CAP_BFRAME]);
+		msm_vidc_comm_update_ctrl(inst,
+				V4L2_CID_MPEG_VIDEO_HEVC_PROFILE,
+				&inst->capability.cap[CAP_PROFILE]);
 	}
 	msm_vidc_comm_update_ctrl(inst,
 			V4L2_CID_MPEG_VIDEO_H264_LEVEL,
@@ -4863,7 +4866,7 @@ int msm_comm_qbufs_batch(struct msm_vidc_inst *inst,
 loop_end:
 		/* Queue pending buffers till batch size */
 		if (num_buffers_queued == inst->batch.size) {
-			s_vpr_e(inst->sid, "%s: Queue buffers till batch size\n");
+			s_vpr_l(inst->sid, "Queue buffers till batch size\n");
 			break;
 		}
 	}

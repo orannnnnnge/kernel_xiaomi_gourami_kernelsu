@@ -1,6 +1,6 @@
 /*
- * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021-2022, Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <soc/qcom/qmi_rmnet.h>
@@ -337,6 +337,9 @@ static void __qmi_rmnet_bearer_put(struct net_device *dev,
 
 			mq->bearer = NULL;
 			mq->drop_on_remove = reset;
+			/* Let other CPU's see this update so that packets are
+			 * dropped, instead of further processing packets
+			 */
 			smp_mb();
 
 			qmi_rmnet_flow_control(dev, i, 1);
@@ -367,6 +370,9 @@ static void __qmi_rmnet_update_mq(struct net_device *dev,
 	if (!mq->bearer) {
 		mq->bearer = bearer;
 		mq->drop_on_remove = false;
+		/* Let other CPU's see this update so that packets are
+		 * dropped, instead of further processing packets
+		 */
 		smp_mb();
 
 		if (dfc_mode == DFC_MODE_SA) {

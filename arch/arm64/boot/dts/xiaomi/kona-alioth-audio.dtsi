@@ -59,7 +59,7 @@
 
 		cirrus,asp-sdout-hiz = <3>;
 
-		cirrus,boost-peak-milliamp = <3700>;
+		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
 
@@ -84,7 +84,7 @@
 
 		cirrus,asp-sdout-hiz = <3>;
 
-		cirrus,boost-peak-milliamp = <3700>;
+		cirrus,boost-peak-milliamp = <4000>;
 		cirrus,boost-ind-nanohenry = <1000>;
 		cirrus,boost-cap-microfarad = <15>;
 

@@ -3792,9 +3792,9 @@ static int wm_halo_apply_calibration(struct snd_soc_dapm_widget *w)
 	wm_adsp_k_ctl_put(dsp, "R DSP1 Protection 400a4 DC_OFFSET_HOLD_TIME", 150);
 	wm_adsp_k_ctl_get(dsp, "R DSP1 Protection 400a4 DC_OFFSET_HOLD_TIME");
 #endif
-	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_R", 8518);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_R", 8434);
 	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_STATUS", 1);
-	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_CHECKSUM", 8519);
+	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_CHECKSUM", 8435);
 	wm_adsp_k_ctl_put(dsp, "DSP1 Protection cd CAL_AMBIENT", 30);
 	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_R");
 	wm_adsp_k_ctl_get(dsp, "DSP1 Protection cd CAL_STATUS");
