@@ -630,7 +630,6 @@ static void check_mm(struct mm_struct *mm)
 #if defined(CONFIG_TRANSPARENT_HUGEPAGE) && !USE_SPLIT_PMD_PTLOCKS
 	VM_BUG_ON_MM(mm->pmd_huge_pte, mm);
 #endif
-	VM_BUG_ON_MM(lru_gen_mm_is_active(mm), mm);
 }
 
 #define allocate_mm()	(kmem_cache_alloc(mm_cachep, GFP_KERNEL))
@@ -1667,6 +1666,14 @@ static __always_inline void delayed_free_task(struct task_struct *tsk)
 		call_rcu(&tsk->rcu, __delayed_free_task);
 	else
 		free_task(tsk);
+}
+
+struct pid *pidfd_pid(const struct file *file)
+{
+	if (file->f_op == &pidfd_fops)
+		return file->private_data;
+
+	return ERR_PTR(-EBADF);
 }
 
 static int pidfd_release(struct inode *inode, struct file *file)

@@ -761,7 +761,7 @@ void tcp_send_window_probe(struct sock *sk);
 
 static inline u64 tcp_clock_ns(void)
 {
-	return local_clock();
+	return ktime_get_ns();
 }
 
 static inline u64 tcp_clock_us(void)
@@ -781,17 +781,7 @@ static inline u32 tcp_time_stamp_raw(void)
 	return div_u64(tcp_clock_ns(), NSEC_PER_SEC / TCP_TS_HZ);
 }
 
-
-/* Refresh 1us clock of a TCP socket,
- * ensuring monotically increasing values.
- */
-static inline void tcp_mstamp_refresh(struct tcp_sock *tp)
-{
-	u64 val = tcp_clock_us();
-
-	if (val > tp->tcp_mstamp)
-		tp->tcp_mstamp = val;
-}
+void tcp_mstamp_refresh(struct tcp_sock *tp);
 
 static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)
 {
@@ -800,7 +790,13 @@ static inline u32 tcp_stamp_us_delta(u64 t1, u64 t0)
 
 static inline u32 tcp_skb_timestamp(const struct sk_buff *skb)
 {
-	return div_u64(skb->skb_mstamp, USEC_PER_SEC / TCP_TS_HZ);
+	return div_u64(skb->skb_mstamp_ns, NSEC_PER_SEC / TCP_TS_HZ);
+}
+
+/* provide the departure time in us unit */
+static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
+{
+	return div_u64(skb->skb_mstamp_ns, NSEC_PER_USEC);
 }
 
 
@@ -846,7 +842,7 @@ struct tcp_skb_cb {
 #define TCPCB_SACKED_RETRANS	0x02	/* SKB retransmitted		*/
 #define TCPCB_LOST		0x04	/* SKB is lost			*/
 #define TCPCB_TAGBITS		0x07	/* All tag bits			*/
-#define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp)	*/
+#define TCPCB_REPAIRED		0x10	/* SKB repaired (no skb_mstamp_ns)	*/
 #define TCPCB_EVER_RETRANS	0x80	/* Ever retransmitted frame	*/
 #define TCPCB_RETRANS		(TCPCB_SACKED_RETRANS|TCPCB_EVER_RETRANS| \
 				TCPCB_REPAIRED)
@@ -1143,7 +1139,7 @@ void tcp_rate_check_app_limited(struct sock *sk);
  */
 static inline int tcp_is_sack(const struct tcp_sock *tp)
 {
-	return tp->rx_opt.sack_ok;
+	return likely(tp->rx_opt.sack_ok);
 }
 
 static inline bool tcp_is_reno(const struct tcp_sock *tp)
@@ -1264,8 +1260,31 @@ static inline bool tcp_needs_internal_pacing(const struct sock *sk)
 	return smp_load_acquire(&sk->sk_pacing_status) == SK_PACING_NEEDED;
 }
 
+/* Return in jiffies the delay before one skb is sent.
+ * If @skb is NULL, we look at EDT for next packet being sent on the socket.
+ */
+static inline unsigned long tcp_pacing_delay(const struct sock *sk,
+					     const struct sk_buff *skb)
+{
+	s64 pacing_delay = skb ? skb->tstamp : tcp_sk(sk)->tcp_wstamp_ns;
+
+	pacing_delay -= tcp_sk(sk)->tcp_clock_cache;
+
+	return pacing_delay > 0 ? nsecs_to_jiffies(pacing_delay) : 0;
+}
+
+static inline void tcp_reset_xmit_timer(struct sock *sk,
+					const int what,
+					unsigned long when,
+					const unsigned long max_when,
+					const struct sk_buff *skb)
+{
+	inet_csk_reset_xmit_timer(sk, what, when + tcp_pacing_delay(sk, skb),
+				  max_when);
+}
+
 /* Something is really bad, we could not queue an additional packet,
- * because qdisc is full or receiver sent a 0 window.
+ * because qdisc is full or receiver sent a 0 window, or we are paced.
  * We do not want to add fuel to the fire, or abort too early,
  * so make sure the timer we arm now is at least 200ms in the future,
  * regardless of current icsk_rto value (as it could be ~2ms)
@@ -1287,8 +1306,9 @@ static inline unsigned long tcp_probe0_when(const struct sock *sk,
 static inline void tcp_check_probe_timer(struct sock *sk)
 {
 	if (!tcp_sk(sk)->packets_out && !inet_csk(sk)->icsk_pending)
-		inet_csk_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
-					  tcp_probe0_base(sk), TCP_RTO_MAX);
+		tcp_reset_xmit_timer(sk, ICSK_TIME_PROBE0,
+				     tcp_probe0_base(sk), TCP_RTO_MAX,
+				     NULL);
 }
 
 static inline void tcp_init_wl(struct tcp_sock *tp, u32 seq)
@@ -1585,9 +1605,21 @@ struct tcp_md5sig_key *tcp_v4_md5_lookup(const struct sock *sk,
 					 const struct sock *addr_sk);
 
 #ifdef CONFIG_TCP_MD5SIG
-struct tcp_md5sig_key *tcp_md5_do_lookup(const struct sock *sk,
-					 const union tcp_md5_addr *addr,
-					 int family);
+#include <linux/jump_label.h>
+extern struct static_key tcp_md5_needed;
+struct tcp_md5sig_key *__tcp_md5_do_lookup(const struct sock *sk,
+					   const union tcp_md5_addr *addr,
+					   int family);
+static inline struct tcp_md5sig_key *
+tcp_md5_do_lookup(const struct sock *sk,
+		  const union tcp_md5_addr *addr,
+		  int family)
+{
+	if (!static_key_false(&tcp_md5_needed))
+		return NULL;
+	return __tcp_md5_do_lookup(sk, addr, family);
+}
+
 #define tcp_twsk_md5_key(twsk)	((twsk)->tw_md5_key)
 #else
 static inline struct tcp_md5sig_key *tcp_md5_do_lookup(const struct sock *sk,
@@ -1993,7 +2025,7 @@ static inline s64 tcp_rto_delta_us(const struct sock *sk)
 {
 	const struct sk_buff *skb = tcp_rtx_queue_head(sk);
 	u32 rto = inet_csk(sk)->icsk_rto;
-	u64 rto_time_stamp_us = skb->skb_mstamp + jiffies_to_usecs(rto);
+	u64 rto_time_stamp_us = tcp_skb_timestamp_us(skb) + jiffies_to_usecs(rto);
 
 	return rto_time_stamp_us - tcp_sk(sk)->tcp_mstamp;
 }

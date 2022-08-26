@@ -212,16 +212,11 @@ static void move_ptes(struct vm_area_struct *vma, pmd_t *old_pmd,
 
 #ifdef CONFIG_HAVE_MOVE_PMD
 static bool move_normal_pmd(struct vm_area_struct *vma, unsigned long old_addr,
-		  unsigned long new_addr, unsigned long old_end,
-		  pmd_t *old_pmd, pmd_t *new_pmd)
+		  unsigned long new_addr, pmd_t *old_pmd, pmd_t *new_pmd)
 {
 	spinlock_t *old_ptl, *new_ptl;
 	struct mm_struct *mm = vma->vm_mm;
 	pmd_t pmd;
-
-	if ((old_addr & ~PMD_MASK) || (new_addr & ~PMD_MASK)
-	    || old_end - old_addr < PMD_SIZE)
-		return false;
 
 	/*
 	 * The destination pmd shouldn't be established, free_pgtables()
@@ -256,8 +251,8 @@ static bool move_normal_pmd(struct vm_area_struct *vma, unsigned long old_addr,
 }
 #else
 static inline bool move_normal_pmd(struct vm_area_struct *vma,
-		unsigned long old_addr, unsigned long new_addr,
-		unsigned long old_end, pmd_t *old_pmd, pmd_t *new_pmd)
+		unsigned long old_addr, unsigned long new_addr, pmd_t *old_pmd,
+		pmd_t *new_pmd)
 {
 	return false;
 }
@@ -359,8 +354,7 @@ static unsigned long get_extent(enum pgt_entry entry, unsigned long old_addr,
  */
 static bool move_pgt_entry(enum pgt_entry entry, struct vm_area_struct *vma,
 			unsigned long old_addr, unsigned long new_addr,
-			unsigned long old_end, void *old_entry,
-			void *new_entry, bool need_rmap_locks)
+			void *old_entry, void *new_entry, bool need_rmap_locks)
 {
 	bool moved = false;
 
@@ -370,8 +364,8 @@ static bool move_pgt_entry(enum pgt_entry entry, struct vm_area_struct *vma,
 
 	switch (entry) {
 	case NORMAL_PMD:
-		moved = move_normal_pmd(vma, old_addr, new_addr, old_end,
-					old_entry, new_entry);
+		moved = move_normal_pmd(vma, old_addr, new_addr, old_entry,
+					new_entry);
 		break;
 	case NORMAL_PUD:
 		moved = move_normal_pud(vma, old_addr, new_addr, old_entry,
@@ -379,8 +373,8 @@ static bool move_pgt_entry(enum pgt_entry entry, struct vm_area_struct *vma,
 		break;
 	case HPAGE_PMD:
 		moved = IS_ENABLED(CONFIG_TRANSPARENT_HUGEPAGE) &&
-			move_huge_pmd(vma, old_addr, new_addr, old_end,
-					old_entry, new_entry);
+			move_huge_pmd(vma, old_addr, new_addr, old_entry,
+				      new_entry);
 		break;
 	default:
 		WARN_ON_ONCE(1);
@@ -430,8 +424,7 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 			if (!new_pud)
 				break;
 			if (move_pgt_entry(NORMAL_PUD, vma, old_addr, new_addr,
-						old_end, old_pud, new_pud,
-						true))
+					   old_pud, new_pud, true))
 				continue;
 		}
 
@@ -446,20 +439,19 @@ unsigned long move_page_tables(struct vm_area_struct *vma,
 		    pmd_devmap(*old_pmd)) {
 			if (extent == HPAGE_PMD_SIZE &&
 			    move_pgt_entry(HPAGE_PMD, vma, old_addr, new_addr,
-				    old_end, old_pmd, new_pmd, need_rmap_locks))
+					   old_pmd, new_pmd, need_rmap_locks))
 				continue;
 			split_huge_pmd(vma, old_pmd, old_addr);
 			if (pmd_trans_unstable(old_pmd))
 				continue;
 		} else if (IS_ENABLED(CONFIG_HAVE_MOVE_PMD) &&
-					extent == PMD_SIZE) {
+			   extent == PMD_SIZE) {
 			/*
 			 * If the extent is PMD-sized, try to speed the move by
 			 * moving at the PMD level if possible.
 			 */
 			if (move_pgt_entry(NORMAL_PMD, vma, old_addr, new_addr,
-						old_end, old_pmd, new_pmd,
-						true))
+					   old_pmd, new_pmd, true))
 				continue;
 		}
 
@@ -695,6 +687,23 @@ static unsigned long mremap_to(unsigned long addr, unsigned long old_len,
 	if (addr + old_len > new_addr && new_addr + new_len > addr)
 		goto out;
 
+	/*
+	 * move_vma() need us to stay 4 maps below the threshold, otherwise
+	 * it will bail out at the very beginning.
+	 * That is a problem if we have already unmaped the regions here
+	 * (new_addr, and old_addr), because userspace will not know the
+	 * state of the vma's after it gets -ENOMEM.
+	 * So, to avoid such scenario we can pre-compute if the whole
+	 * operation has high chances to success map-wise.
+	 * Worst-scenario case is when both vma's (new_addr and old_addr) get
+	 * split in 3 before unmaping it.
+	 * That means 2 more maps (1 for each) to the ones we already hold.
+	 * Check whether current map count plus 2 still leads us to 4 maps below
+	 * the threshold, otherwise return -ENOMEM here to be more safe.
+	 */
+	if ((mm->map_count + 2) >= sysctl_max_map_count - 3)
+		return -ENOMEM;
+
 	if (flags & MREMAP_FIXED) {
 		ret = do_munmap(mm, new_addr, new_len, uf_unmap_early);
 		if (ret)
@@ -772,6 +781,7 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	struct vm_area_struct *vma;
 	unsigned long ret = -EINVAL;
 	bool locked = false;
+	bool downgraded = false;
 	struct vm_userfaultfd_ctx uf = NULL_VM_UFFD_CTX;
 	LIST_HEAD(uf_unmap_early);
 	LIST_HEAD(uf_unmap);
@@ -819,12 +829,20 @@ SYSCALL_DEFINE5(mremap, unsigned long, addr, unsigned long, old_len,
 	/*
 	 * Always allow a shrinking remap: that just unmaps
 	 * the unnecessary pages..
-	 * do_munmap does all the needed commit accounting
+	 * __do_munmap does all the needed commit accounting, and
+	 * downgrades mmap_sem to read if so directed.
 	 */
 	if (old_len >= new_len) {
-		ret = do_munmap(mm, addr+new_len, old_len - new_len, &uf_unmap);
-		if (ret && old_len != new_len)
+		int retval;
+
+		retval = __do_munmap(mm, addr+new_len, old_len - new_len,
+				  &uf_unmap, true);
+		if (retval < 0 && old_len != new_len) {
+			ret = retval;
 			goto out;
+		/* Returning 1 indicates mmap_sem is downgraded to read. */
+		} else if (retval == 1)
+			downgraded = true;
 		ret = addr;
 		goto out;
 	}
@@ -896,8 +914,10 @@ out:
 	if (offset_in_page(ret))
 		locked = 0;
 
-	up_write(&current->mm->mmap_sem);
-
+	if (downgraded)
+		up_read(&current->mm->mmap_sem);
+	else
+		up_write(&current->mm->mmap_sem);
 	if (locked && new_len > old_len)
 		mm_populate(new_addr + old_len, new_len - old_len);
 	userfaultfd_unmap_complete(mm, &uf_unmap_early);

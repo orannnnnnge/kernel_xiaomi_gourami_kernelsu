@@ -373,6 +373,9 @@ config ARCH_WANT_IRQS_OFF_ACTIVATE_MM
 	  irqs disabled over activate_mm. Architectures that do IPI based TLB
 	  shootdowns should enable this.
 
+config HAVE_MMU_GATHER_PAGE_SIZE
+	bool
+
 config ARCH_HAVE_NMI_SAFE_CMPXCHG
 	bool
 
@@ -655,15 +658,6 @@ config HAVE_ARCH_TRANSPARENT_HUGEPAGE
 
 config HAVE_ARCH_TRANSPARENT_HUGEPAGE_PUD
 	bool
-
-config HAVE_ARCH_PARENT_PMD_YOUNG
-	bool
-	depends on PGTABLE_LEVELS > 2
-	help
-	  Architectures that select this are able to set the accessed bit on
-	  non-leaf PMD entries in addition to leaf PTE entries where pages are
-	  mapped. For them, page table walkers that clear the accessed bit may
-	  stop at non-leaf PMD entries if they do not see the accessed bit.
 
 config HAVE_ARCH_HUGE_VMAP
 	bool
@@ -1028,6 +1022,15 @@ config RELR
 	  format. Requires a compatible linker (LLD supports this feature), as
 	  well as compatible NM and OBJCOPY utilities (llvm-nm and llvm-objcopy
 	  are compatible).
+
+config ARCH_HAS_NONLEAF_PMD_YOUNG
+	bool
+	depends on PGTABLE_LEVELS > 2
+	help
+	  Architectures that select this option are capable of setting the
+	  accessed bit in non-leaf PMD entries when using them as part of linear
+	  address translations. Page table walkers that clear the accessed bit
+	  may use this capability to reduce their search space.
 
 source "kernel/gcov/Kconfig"
 

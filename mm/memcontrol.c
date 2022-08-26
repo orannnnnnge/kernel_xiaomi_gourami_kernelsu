@@ -34,7 +34,7 @@
 #include <linux/page_counter.h>
 #include <linux/memcontrol.h>
 #include <linux/cgroup.h>
-#include <linux/mm.h>
+#include <linux/pagewalk.h>
 #include <linux/sched/mm.h>
 #include <linux/shmem_fs.h>
 #include <linux/hugetlb.h>
@@ -1184,12 +1184,14 @@ void mem_cgroup_update_lru_size(struct lruvec *lruvec, enum lru_list lru,
 		*lru_size += nr_pages;
 
 	size = *lru_size;
+#ifndef CONFIG_LRU_GEN
 	if (WARN_ONCE(size < 0,
 		"%s(%p, %d, %d): lru_size %ld\n",
 		__func__, lruvec, lru, nr_pages, size)) {
 		VM_BUG_ON(1);
 		*lru_size = 0;
 	}
+#endif
 
 	if (nr_pages > 0)
 		*lru_size += nr_pages;
@@ -1723,7 +1725,7 @@ static enum oom_status mem_cgroup_oom(struct mem_cgroup *memcg, gfp_t mask, int 
 	 * victim and then we have to bail out from the charge path.
 	 */
 	if (memcg->oom_kill_disable) {
-		if (!task_in_user_fault())
+		if (!current->in_user_fault)
 			return OOM_SKIPPED;
 		css_get(&memcg->css);
 		current->memcg_in_oom = memcg;
@@ -2440,6 +2442,7 @@ static void commit_charge(struct page *page, struct mem_cgroup *memcg,
 	 *
 	 * - a page cache insertion, a swapin fault, or a migration
 	 *   have the page locked
+	 * - mem_cgroup_trylock_pages()
 	 */
 	page->mem_cgroup = memcg;
 
@@ -4496,12 +4499,12 @@ static void __mem_cgroup_free(struct mem_cgroup *memcg)
 	for_each_node(node)
 		free_mem_cgroup_per_node_info(memcg, node);
 	free_percpu(memcg->stat_cpu);
-	lru_gen_free_mm_list(memcg);
 	kfree(memcg);
 }
 
 static void mem_cgroup_free(struct mem_cgroup *memcg)
 {
+	lru_gen_exit_memcg(memcg);
 	memcg_wb_domain_exit(memcg);
 	__mem_cgroup_free(memcg);
 }
@@ -4533,9 +4536,6 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 		if (alloc_mem_cgroup_per_node_info(memcg, node))
 			goto fail;
 
-	if (lru_gen_alloc_mm_list(memcg))
-		goto fail;
-
 	if (memcg_wb_domain_init(memcg, GFP_KERNEL))
 		goto fail;
 
@@ -4555,6 +4555,7 @@ static struct mem_cgroup *mem_cgroup_alloc(void)
 	INIT_LIST_HEAD(&memcg->cgwb_list);
 #endif
 	idr_replace(&mem_cgroup_idr, memcg, memcg->id.id);
+	lru_gen_init_memcg(memcg);
 	return memcg;
 fail:
 	mem_cgroup_id_remove(memcg);
@@ -5092,17 +5093,16 @@ static int mem_cgroup_count_precharge_pte_range(pmd_t *pmd,
 	return 0;
 }
 
+static const struct mm_walk_ops precharge_walk_ops = {
+	.pmd_entry	= mem_cgroup_count_precharge_pte_range,
+};
+
 static unsigned long mem_cgroup_count_precharge(struct mm_struct *mm)
 {
 	unsigned long precharge;
 
-	struct mm_walk mem_cgroup_count_precharge_walk = {
-		.pmd_entry = mem_cgroup_count_precharge_pte_range,
-		.mm = mm,
-	};
 	down_read(&mm->mmap_sem);
-	walk_page_range(0, mm->highest_vm_end,
-			&mem_cgroup_count_precharge_walk);
+	walk_page_range(mm, 0, mm->highest_vm_end, &precharge_walk_ops, NULL);
 	up_read(&mm->mmap_sem);
 
 	precharge = mc.precharge;
@@ -5371,13 +5371,12 @@ put:			/* get_mctgt_type() gets the page */
 	return ret;
 }
 
+static const struct mm_walk_ops charge_walk_ops = {
+	.pmd_entry	= mem_cgroup_move_charge_pte_range,
+};
+
 static void mem_cgroup_move_charge(void)
 {
-	struct mm_walk mem_cgroup_move_charge_walk = {
-		.pmd_entry = mem_cgroup_move_charge_pte_range,
-		.mm = mc.mm,
-	};
-
 	lru_add_drain_all();
 	/*
 	 * Signal lock_page_memcg() to take the memcg's move_lock
@@ -5403,7 +5402,8 @@ retry:
 	 * When we have consumed all precharges and failed in doing
 	 * additional charge, the page walk just aborts.
 	 */
-	walk_page_range(0, mc.mm->highest_vm_end, &mem_cgroup_move_charge_walk);
+	walk_page_range(mc.mm, 0, mc.mm->highest_vm_end, &charge_walk_ops,
+			NULL);
 
 	up_read(&mc.mm->mmap_sem);
 	atomic_dec(&mc.from->moving_account);
@@ -5450,7 +5450,7 @@ static void mem_cgroup_attach(struct cgroup_taskset *tset)
 static void mem_cgroup_attach(struct cgroup_taskset *tset)
 {
 }
-#endif
+#endif /* CONFIG_LRU_GEN */
 
 /*
  * Cgroup retains root cgroups across [un]mount cycles making it necessary
@@ -5712,6 +5712,13 @@ static int memory_stat_show(struct seq_file *m, void *v)
 	seq_printf(m, "pgfault %lu\n", acc.events[PGFAULT]);
 	seq_printf(m, "pgmajfault %lu\n", acc.events[PGMAJFAULT]);
 
+	seq_printf(m, "workingset_refault %lu\n",
+		   acc.stat[WORKINGSET_REFAULT]);
+	seq_printf(m, "workingset_activate %lu\n",
+		   acc.stat[WORKINGSET_ACTIVATE]);
+	seq_printf(m, "workingset_nodereclaim %lu\n",
+		   acc.stat[WORKINGSET_NODERECLAIM]);
+
 	seq_printf(m, "pgrefill %lu\n", acc.events[PGREFILL]);
 	seq_printf(m, "pgscan %lu\n", acc.events[PGSCAN_KSWAPD] +
 		   acc.events[PGSCAN_DIRECT]);
@@ -5721,13 +5728,6 @@ static int memory_stat_show(struct seq_file *m, void *v)
 	seq_printf(m, "pgdeactivate %lu\n", acc.events[PGDEACTIVATE]);
 	seq_printf(m, "pglazyfree %lu\n", acc.events[PGLAZYFREE]);
 	seq_printf(m, "pglazyfreed %lu\n", acc.events[PGLAZYFREED]);
-
-	seq_printf(m, "workingset_refault %lu\n",
-		   acc.stat[WORKINGSET_REFAULT]);
-	seq_printf(m, "workingset_activate %lu\n",
-		   acc.stat[WORKINGSET_ACTIVATE]);
-	seq_printf(m, "workingset_nodereclaim %lu\n",
-		   acc.stat[WORKINGSET_NODERECLAIM]);
 
 	return 0;
 }

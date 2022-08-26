@@ -1590,14 +1590,15 @@ static inline void unregister_sched_domain_sysctl(void)
 #endif
 
 extern int newidle_balance(struct rq *this_rq, struct rq_flags *rf);
+extern void flush_smp_call_function_from_idle(void);
 
-#else
-
+#else /* !CONFIG_SMP: */
+static inline void flush_smp_call_function_from_idle(void) { }
 static inline void sched_ttwu_pending(void) { }
 
 static inline int newidle_balance(struct rq *this_rq, struct rq_flags *rf) { return 0; }
 
-#endif /* CONFIG_SMP */
+#endif
 
 #include "stats.h"
 #include "autogroup.h"
@@ -1780,7 +1781,8 @@ static inline int task_on_rq_migrating(struct task_struct *p)
  */
 #define WF_SYNC			0x01		/* Waker goes to sleep after wakeup */
 #define WF_FORK			0x02		/* Child wakeup after fork */
-#define WF_MIGRATED		0x4		/* Internal use, task got migrated */
+#define WF_MIGRATED	0x04		/* internal use, task got migrated */
+#define WF_ON_RQ	0x08		/* wakee is on_rq */
 
 /*
  * To aid in avoiding the subversion of "niceness" due to uneven distribution

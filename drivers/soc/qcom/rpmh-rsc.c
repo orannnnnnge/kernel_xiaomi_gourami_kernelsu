@@ -9,6 +9,7 @@
 #include <linux/delay.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
+#include <linux/iopoll.h>
 #include <linux/ipc_logging.h>
 #include <linux/kernel.h>
 #include <linux/list.h>
@@ -102,13 +103,22 @@ static void write_tcs_reg(struct rsc_drv *drv, int reg, int tcs_id, u32 data)
 static void write_tcs_reg_sync(struct rsc_drv *drv, int reg, int tcs_id,
 			       u32 data)
 {
+	int i;
+
 	writel(data, drv->tcs_base + reg + RSC_DRV_TCS_OFFSET * tcs_id);
-	for (;;) {
-		if (data == readl(drv->tcs_base + reg +
-				  RSC_DRV_TCS_OFFSET * tcs_id))
-			break;
+
+	/*
+	 * Wait until we read back the same value.  Use a counter rather than
+	 * ktime for timeout since this may be called after timekeeping stops.
+	 */
+	for (i = 0; i < USEC_PER_SEC; i++) {
+		if (readl(drv->tcs_base + reg +
+				  RSC_DRV_TCS_OFFSET * tcs_id) == data)
+			return;
 		udelay(1);
 	}
+	pr_err("%s: error writing %#x to %d:%#x\n", drv->name,
+	       data, tcs_id, reg);
 }
 
 static bool tcs_is_free(struct rsc_drv *drv, int tcs_id)
@@ -283,8 +293,7 @@ static irqreturn_t tcs_tx_done(int irq, void *p)
 			cmd = &req->cmds[j];
 			sts = read_tcs_reg(drv, RSC_DRV_CMD_STATUS, i, j);
 			if (!(sts & CMD_STATUS_ISSUED) ||
-			   ((req->wait_for_compl || cmd->wait) &&
-			   !(sts & CMD_STATUS_COMPL))) {
+			   (cmd->wait && !(sts & CMD_STATUS_COMPL))) {
 				pr_err("Incomplete request: %s: addr=%#x data=%#x",
 				       drv->name, cmd->addr, cmd->data);
 				err = -EIO;
@@ -312,7 +321,6 @@ static irqreturn_t tcs_tx_done(int irq, void *p)
 skip:
 		/* Reclaim the TCS */
 		write_tcs_reg(drv, RSC_DRV_CMD_ENABLE, i, 0);
-		write_tcs_reg(drv, RSC_DRV_CMD_WAIT_FOR_CMPL, i, 0);
 		write_tcs_reg(drv, RSC_DRV_IRQ_CLEAR, 0, BIT(i));
 		clear_bit(i, drv->tcs_in_use);
 		if (req)
@@ -325,23 +333,23 @@ skip:
 static void __tcs_buffer_write(struct rsc_drv *drv, int tcs_id, int cmd_id,
 			       const struct tcs_request *msg)
 {
-	u32 msgid, cmd_msgid;
+	u32 msgid;
+	u32 cmd_msgid = CMD_MSGID_LEN | CMD_MSGID_WRITE;
 	u32 cmd_enable = 0;
-	u32 cmd_complete;
 	struct tcs_cmd *cmd;
 	int i, j;
 
-	cmd_msgid = CMD_MSGID_LEN;
+	/* Convert all commands to RR when the request has wait_for_compl set */
 	cmd_msgid |= msg->wait_for_compl ? CMD_MSGID_RESP_REQ : 0;
-	cmd_msgid |= CMD_MSGID_WRITE;
-
-	cmd_complete = read_tcs_reg(drv, RSC_DRV_CMD_WAIT_FOR_CMPL, tcs_id, 0);
 
 	for (i = 0, j = cmd_id; i < msg->num_cmds; i++, j++) {
 		cmd = &msg->cmds[i];
 		cmd_enable |= BIT(j);
-		cmd_complete |= cmd->wait << j;
 		msgid = cmd_msgid;
+		/*
+		 * Additionally, if the cmd->wait is set, make the command
+		 * response reqd even if the overall request was fire-n-forget.
+		 */
 		msgid |= cmd->wait ? CMD_MSGID_RESP_REQ : 0;
 
 		write_tcs_cmd(drv, RSC_DRV_CMD_MSGID, tcs_id, j, msgid);
@@ -354,7 +362,6 @@ static void __tcs_buffer_write(struct rsc_drv *drv, int tcs_id, int cmd_id,
 			       cmd->data, cmd->wait);
 	}
 
-	write_tcs_reg(drv, RSC_DRV_CMD_WAIT_FOR_CMPL, tcs_id, cmd_complete);
 	cmd_enable |= read_tcs_reg(drv, RSC_DRV_CMD_ENABLE, tcs_id, 0);
 	write_tcs_reg(drv, RSC_DRV_CMD_ENABLE, tcs_id, cmd_enable);
 }

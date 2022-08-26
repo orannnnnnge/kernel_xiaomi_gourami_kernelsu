@@ -167,17 +167,17 @@ unsigned int sysctl_sched_cfs_bandwidth_slice		= 5000UL;
  */
 unsigned int capacity_margin				= 1280;
 unsigned int sched_capacity_margin_up[CPU_NR] = {
-	[0 ... CPU_NR - 1] = 1280
-}; /* ~20% margin */
+	[0 ... CPU_NR - 1] = 1078
+}; /* ~5% margin */
 unsigned int sched_capacity_margin_down[CPU_NR] = {
-	[0 ... CPU_NR - 1] = 1280
-}; /* ~20% margin */
+	[0 ... CPU_NR - 1] = 1205
+}; /* ~15% margin */
 unsigned int sched_capacity_margin_up_boosted[CPU_NR] = {
-	1280, 1280, 1280, 1280, 1280, 1280, 1280, 1078
-}; /* ~20% margin for small and big, 5% for big+ */
+	3658, 3658, 3658, 3658, 1078, 1078, 1078, 1024
+}; /* ~72% margin for small, 5% for big, 0% for big+ */
 unsigned int sched_capacity_margin_down_boosted[CPU_NR] = {
-	1280, 1280, 1280, 1280, 1575, 1575, 1575, 1280
-}; /* not used for small cores, ~35% margin for big, ~20% margin for big+ */
+	3658, 3658, 3658, 3658, 3658, 3658, 3658, 3658
+}; /* not used for small cores, ~72% margin for big, ~72% margin for big+ */
 
 #ifdef CONFIG_SCHED_WALT
 /* 1ms default for 20ms window size scaled to 1024 */
@@ -6738,6 +6738,36 @@ static int select_idle_cpu(struct task_struct *p, struct sched_domain *sd, int t
 }
 
 /*
+ * Scan the asym_capacity domain for idle CPUs; pick the first idle one on which
+ * the task fits.
+ */
+static int select_idle_capacity(struct task_struct *p, int target)
+{
+	struct sched_domain *sd;
+	int cpu;
+
+	if (!static_branch_unlikely(&sched_asym_cpucapacity))
+		return -1;
+
+	sd = rcu_dereference(per_cpu(sd_asym_cpucapacity, target));
+	if (!sd)
+		return -1;
+
+	for_each_cpu_wrap(cpu, sched_domain_span(sd), target) {
+		if (!cpumask_test_cpu(cpu, &p->cpus_allowed))
+			continue;
+		if (!available_idle_cpu(cpu))
+			continue;
+		if (!task_fits_capacity(p, capacity_of(cpu), target))
+			continue;
+
+		return cpu;
+	}
+
+	return -1;
+}
+
+/*
  * Try and locate an idle core/thread in the LLC cache domain.
  */
 static inline int __select_idle_sibling(struct task_struct *p, int prev,
@@ -6745,6 +6775,11 @@ static inline int __select_idle_sibling(struct task_struct *p, int prev,
 {
 	struct sched_domain *sd;
 	int i, recent_used_cpu;
+
+	/* For asymmetric capacities, try to be smart about the placement */
+	i = select_idle_capacity(p, target);
+	if ((unsigned)i < nr_cpumask_bits)
+		return i;
 
 	if ((available_idle_cpu(target) && !cpu_isolated(target)) || sched_idle_cpu(target))
 		return target;
@@ -7071,10 +7106,6 @@ static int get_start_cpu(struct task_struct *p, bool sync_boost)
 			rd->max_cap_orig_cpu : rd->mid_cap_orig_cpu;
 	}
 
-	if (start_cpu == rd->mid_cap_orig_cpu &&
-			!task_demand_fits(p, start_cpu))
-		start_cpu = rd->max_cap_orig_cpu;
-
 	return start_cpu;
 }
 
@@ -7104,6 +7135,7 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 	struct sched_group *sg;
 	int best_active_cpu = -1;
 	int best_idle_cpu = -1;
+	bool idle_fit_cpu_found = false;
 	int target_cpu = -1;
 	int backup_cpu = -1;
 	int i, start_cpu;
@@ -7221,10 +7253,18 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 			 * capacity margin.
 			 */
 			new_util = max(min_util, new_util);
-			if ((!(prefer_idle && idle_cpu(i)) &&
-			    new_util > capacity_orig) ||
-			     (is_min_capacity_cpu(i) &&
-			      !task_fits_capacity(p, capacity_orig, i)))
+			if (!(prefer_idle && idle_cpu(i)) &&
+			    new_util > capacity_orig)
+				continue;
+
+			/*
+			 * If start cpu is mid core, we don't want to loop
+			 * back to little cores, unless the task prefers
+			 * idle cpu and could not find one in mid/max core.
+			 */
+			if (!(prefer_idle && idle_fit_cpu_found == false) &&
+			    is_min_capacity_cpu(i) &&
+			    !task_fits_capacity(p, capacity_orig, i))
 				continue;
 
 			/*
@@ -7312,6 +7352,11 @@ static void find_best_target(struct sched_domain *sd, cpumask_t *cpus,
 					target_capacity = capacity_orig;
 					shallowest_idle_cstate = idle_idx;
 					best_idle_util = new_util;
+
+					if (is_min_capacity_cpu(start_cpu) ==
+					    is_min_capacity_cpu(i))
+						idle_fit_cpu_found = true;
+
 					best_idle_cpu = i;
 					continue;
 				}
@@ -7566,33 +7611,6 @@ out:
 				     best_idle_cpu, best_active_cpu,
 				     most_spare_cap_cpu,
 				     target_cpu, backup_cpu);
-}
-
-/*
- * Disable WAKE_AFFINE in the case where task @p doesn't fit in the
- * capacity of either the waking CPU @cpu or the previous CPU @prev_cpu.
- *
- * In that case WAKE_AFFINE doesn't make sense and we'll let
- * BALANCE_WAKE sort things out.
- */
-static int wake_cap(struct task_struct *p, int cpu, int prev_cpu)
-{
-	long min_cap, max_cap;
-
-	if (!static_branch_unlikely(&sched_asym_cpucapacity))
-		return 0;
-
-	min_cap = min(capacity_orig_of(prev_cpu), capacity_orig_of(cpu));
-	max_cap = cpu_rq(cpu)->rd->max_cpu_capacity.val;
-
-	/* Minimum capacity is close to max, no need to abort wake_affine */
-	if (max_cap - min_cap < max_cap >> 3)
-		return 0;
-
-	/* Bring task utilization in sync with prev_cpu */
-	sync_entity_load_avg(&p->se);
-
-	return !task_fits_max(p, cpu);
 }
 
 /*
@@ -8110,11 +8128,10 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 
 	if (sd_flag & SD_BALANCE_WAKE) {
-		int _wake_cap = wake_cap(p, cpu, prev_cpu);
 		int _cpus_allowed = cpumask_test_cpu(cpu, &p->cpus_allowed);
 
 		if (sysctl_sched_sync_hint_enable && sync && _cpus_allowed &&
-		    !_wake_cap && cpu_rq(cpu)->nr_running == 1 &&
+		    cpu_rq(cpu)->nr_running == 1 &&
 		    cpu_is_in_target_set(p, cpu)) {
 			return cpu;
 		}
@@ -8139,7 +8156,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int sd_flag, int wake_f
 			new_cpu = prev_cpu;
 		}
 
-		want_affine = !wake_wide(p, sibling_count_hint) && !_wake_cap &&
+		want_affine = !wake_wide(p, sibling_count_hint) &&
 			      _cpus_allowed;
 	}
 

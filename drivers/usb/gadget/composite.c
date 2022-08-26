@@ -20,11 +20,6 @@
 
 #include "u_os_desc.h"
 
-static bool disable_l1_for_hs;
-module_param(disable_l1_for_hs, bool, 0644);
-MODULE_PARM_DESC(disable_l1_for_hs,
-		 "Disable support for USB L1 LPM for HS devices");
-
 /**
  * struct usb_os_string - represents OS String to be reported by a gadget
  * @bLength: total length of the entire descritor, always 0x12
@@ -815,7 +810,11 @@ static int bos_desc(struct usb_composite_dev *cdev)
 	usb_ext->bLength = USB_DT_USB_EXT_CAP_SIZE;
 	usb_ext->bDescriptorType = USB_DT_DEVICE_CAPABILITY;
 	usb_ext->bDevCapabilityType = USB_CAP_TYPE_EXT;
+#ifdef CONFIG_BOARD_XIAOMI
+	usb_ext->bmAttributes = cpu_to_le32(0);
+#else
 	usb_ext->bmAttributes = cpu_to_le32(USB_LPM_SUPPORT | USB_BESL_SUPPORT);
+#endif
 
 	/*
 	 * The Superspeed USB Capability descriptor shall be implemented by all
@@ -1825,13 +1824,15 @@ composite_setup(struct usb_gadget *gadget, const struct usb_ctrlrequest *ctrl)
 				if (gadget->speed >= USB_SPEED_SUPER) {
 					cdev->desc.bcdUSB = cpu_to_le16(0x0320);
 					cdev->desc.bMaxPacketSize0 = 9;
-				} else if (disable_l1_for_hs) {
-					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
 				} else {
+#ifdef CONFIG_BOARD_XIAOMI
+					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
+#else
 					cdev->desc.bcdUSB = cpu_to_le16(0x0210);
+#endif
 				}
 			} else {
-				if (gadget->lpm_capable)
+				if (!IS_ENABLED(CONFIG_BOARD_XIAOMI) && gadget->lpm_capable)
 					cdev->desc.bcdUSB = cpu_to_le16(0x0201);
 				else
 					cdev->desc.bcdUSB = cpu_to_le16(0x0200);
