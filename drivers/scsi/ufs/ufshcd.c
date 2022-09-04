@@ -138,7 +138,7 @@ static void ufshcd_event_record(struct scsi_cmnd *cmd, enum mm_event_type event)
 	bio = cmd->request->bio;
 	while (bio) {
 		if (bio->bi_alloc_ts)
-			mm_event_end(event, bio->bi_alloc_ts);
+			mm_event_record(event, bio->bi_alloc_ts);
 		bio = bio->bi_next;
 		if (bio == cmd->request->bio)
 			break;
@@ -2590,7 +2590,8 @@ static void __ufshcd_release(struct ufs_hba *hba, bool no_sched)
 		|| hba->ufshcd_state != UFSHCD_STATE_OPERATIONAL
 		|| hba->lrb_in_use || hba->outstanding_tasks
 		|| hba->active_uic_cmd || hba->uic_async_done
-		|| ufshcd_eh_in_progress(hba) || no_sched)
+		|| hba->clk_gating.state == CLKS_OFF || ufshcd_eh_in_progress(hba)
+		|| no_sched)
 		return;
 
 	hba->clk_gating.state = REQ_CLKS_OFF;
@@ -2717,7 +2718,7 @@ static ssize_t ufshcd_clkgate_enable_store(struct device *dev,
 		goto out;
 
 	if (value)
-		hba->clk_gating.active_reqs--;
+		__ufshcd_release(hba, false);
 	else
 		hba->clk_gating.active_reqs++;
 
@@ -2795,7 +2796,7 @@ static void ufshcd_init_clk_gating(struct ufs_hba *hba)
 	snprintf(wq_name, ARRAY_SIZE(wq_name), "ufs_clk_gating_%d",
 		 hba->host->host_no);
 	hba->clk_gating.clk_gating_workq = alloc_ordered_workqueue(wq_name,
-							   WQ_MEM_RECLAIM);
+					WQ_MEM_RECLAIM | WQ_HIGHPRI);
 
 	gating->is_enabled = true;
 

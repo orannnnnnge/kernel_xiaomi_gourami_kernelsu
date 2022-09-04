@@ -448,6 +448,12 @@ config BOARD_ALIOTH
 	help
 	  This enables support for Xiaomi Redmi K40 / POCO F3
 
+config BOARD_MUNCH
+	bool "Munch platform"
+	select BOARD_XIAOMI_SM8250
+	help
+	  This enables support for Xiaomi Redmi K40S / POCO F4
+
 config BOARD_APOLLO
 	bool "Apollo and Apollopro platform"
 	select BOARD_XIAOMI_SM8250

@@ -112,6 +112,7 @@ config ARM64
 	select HAVE_ARCH_BITREVERSE
 	select HAVE_ARCH_HUGE_VMAP
 	select HAVE_ARCH_JUMP_LABEL
+	select HAVE_ARCH_JUMP_LABEL_RELATIVE
 	select HAVE_ARCH_KASAN if !(ARM64_16K_PAGES && ARM64_VA_BITS_48)
 	select HAVE_ARCH_KASAN_SW_TAGS if HAVE_ARCH_KASAN
 	select HAVE_ARCH_KGDB
@@ -1303,12 +1304,6 @@ config ARM64_VHE
 endmenu
 
 menu "ARMv8.2 architectural features"
-
-config AS_HAS_ARMV8_2
-       def_bool y if BOARD_XIAOMI_SM8250
-
-config AS_HAS_SHA3
-       def_bool y if BOARD_XIAOMI_SM8250
 
 config ARM64_UAO
 	bool "Enable support for User Access Override (UAO)"

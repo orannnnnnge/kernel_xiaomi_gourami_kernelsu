@@ -205,6 +205,10 @@ CDEFINES +=	-DANI_LITTLE_BYTE_ENDIAN \
 		-Werror\
 		-D__linux__
 
+ifdef CONFIG_BOARD_MUNCH
+CDEFINES += -DCONFIG_TARGET_PRODUCT_MUNCH
+endif
+
 KBUILD_CPPFLAGS += $(CDEFINES)
 
 # Currently, for versions of gcc which support it, the kernel Makefile
@@ -232,7 +236,11 @@ ifeq ($(KERNEL_BUILD), 1)
 	obj-y	+= wcd938x/
 	obj-y	+= bolero/
 	obj-y	+= cs35l41/
+ifeq ($(CONFIG_BOARD_MUNCH), y)
+	obj-y	+= tfa9874/
+else
 	obj-y	+= tfa98xx/
+endif
 	obj-y	+= rouleur/
 	obj-y	+= wsa883x/
 	obj-y	+= sdm660_cdc/

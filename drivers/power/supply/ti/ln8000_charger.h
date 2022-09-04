@@ -2,7 +2,6 @@
  * ln8000-charger.h - Charger driver for LIONSEMI LN8000
  *
  * Copyright (C) 2021 Lion Semiconductor Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU General Public License as published by the Free
@@ -140,6 +139,7 @@ enum ln8000_reg_addr {
     LN8000_REG_V_FLOAT_CTRL     = 0x28,
     LN8000_REG_CHARGE_CTRL      = 0x29,
     LN8000_REG_LION_CTRL        = 0x30,
+    LN8000_REG_PRODUCT_ID	= 0x31,
     LN8000_REG_BC_OP_1          = 0x41,
     LN8000_REG_BC_OP_2          = 0x42,
     LN8000_REG_BC_STS_A         = 0x49,
@@ -154,8 +154,9 @@ enum ln8000_reg_addr {
 #define LN8000_DEVICE_ID    0x42
 
 enum ln8000_role {
-    LN_PRIMARY              = 0x0,
-    LN_SECONDARY            = 0x1,
+	LN_ROLE_STANDALONE      = 0x0,
+	LN_ROLE_MASTER          = 0x1,
+	LN_ROLE_SLAVE           = 0x2,
 };
 
 enum ln8000_opmode_{
@@ -248,6 +249,41 @@ enum ln8000_adc_hibernate_delay_desc {
 #define BUS_OCP_FOR_QC3P5_CLASS_B		3500000
 #define BUS_OCP_ALARM_FOR_QC3P5_CLASS_B	3200000
 
+/* TI ALARM STATUS */
+#define	BAT_OVP_FAULT_SHIFT			0
+#define	BAT_OCP_FAULT_SHIFT			1
+#define	BUS_OVP_FAULT_SHIFT			2
+#define	BUS_OCP_FAULT_SHIFT			3
+#define	BAT_THERM_FAULT_SHIFT			4
+#define	BUS_THERM_FAULT_SHIFT			5
+#define	DIE_THERM_FAULT_SHIFT			6
+
+#define	BAT_OVP_FAULT_MASK		(1 << BAT_OVP_FAULT_SHIFT)
+#define	BAT_OCP_FAULT_MASK		(1 << BAT_OCP_FAULT_SHIFT)
+#define	BUS_OVP_FAULT_MASK		(1 << BUS_OVP_FAULT_SHIFT)
+#define	BUS_OCP_FAULT_MASK		(1 << BUS_OCP_FAULT_SHIFT)
+#define	BAT_THERM_FAULT_MASK		(1 << BAT_THERM_FAULT_SHIFT)
+#define	BUS_THERM_FAULT_MASK		(1 << BUS_THERM_FAULT_SHIFT)
+#define	DIE_THERM_FAULT_MASK		(1 << DIE_THERM_FAULT_SHIFT)
+
+#define	BAT_OVP_ALARM_SHIFT			0
+#define	BAT_OCP_ALARM_SHIFT			1
+#define	BUS_OVP_ALARM_SHIFT			2
+#define	BUS_OCP_ALARM_SHIFT			3
+#define	BAT_THERM_ALARM_SHIFT			4
+#define	BUS_THERM_ALARM_SHIFT			5
+#define	DIE_THERM_ALARM_SHIFT			6
+#define BAT_UCP_ALARM_SHIFT			7
+
+#define	BAT_OVP_ALARM_MASK		(1 << BAT_OVP_ALARM_SHIFT)
+#define	BAT_OCP_ALARM_MASK		(1 << BAT_OCP_ALARM_SHIFT)
+#define	BUS_OVP_ALARM_MASK		(1 << BUS_OVP_ALARM_SHIFT)
+#define	BUS_OCP_ALARM_MASK		(1 << BUS_OCP_ALARM_SHIFT)
+#define	BAT_THERM_ALARM_MASK		(1 << BAT_THERM_ALARM_SHIFT)
+#define	BUS_THERM_ALARM_MASK		(1 << BUS_THERM_ALARM_SHIFT)
+#define	DIE_THERM_ALARM_MASK		(1 << DIE_THERM_ALARM_SHIFT)
+#define	BAT_UCP_ALARM_MASK		(1 << BAT_UCP_ALARM_SHIFT)
+
 /**
  * driver instance structure definition
  */
@@ -272,7 +308,6 @@ struct ln8000_platform_data {
     bool tbat_mon_disable;          /* disable BAT temperature monitor (prot/alarm) */
     bool tdie_prot_disable;         /* disable die temperature protection */
     bool tdie_reg_disable;          /* disable die temperature regulation */
-    bool revcurr_prot_disable;      /* disable reverse current protection */
 };
 
 struct ln8000_info {
@@ -326,15 +361,23 @@ struct ln8000_info {
     struct delayed_work vac_ov_work;
     bool vac_ov_work_on;
 
+    /* for restore reg_init_val */
+    u32 regulation_ctrl;
+    u32 adc_ctrl;
+    u32 v_float_ctrl;
+    u32 charge_ctrl;
+
 #ifdef LN8000_ROLE_MASTER
     bool ibat_term;             /* battery current below termination threshold */
     bool vbat_rechg;            /* battery voltage below recharge threshold */
     bool vbat_min;              /* battery voltage above min. threshold */
 #endif
 
-    /* debugfs */
-    struct dentry *debug_root;
-    u32 debug_address;
+	bool standalone_mode_master;
+	bool standalone_mode_slave;
+
+	/* logging */
+    struct logbuffer *log;
 };
 
 #endif  /* __LN8000_CHARGER_H__ */

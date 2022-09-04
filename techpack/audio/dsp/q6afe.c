@@ -29,7 +29,11 @@
 #include "adsp_err.h"
 #include "q6afecal-hwdep.h"
 #ifdef TFA_ADSP_SUPPORTED
+#ifdef CONFIG_BOARD_CONFIG_TARGET_PRODUCT_MUNCH
+#include "../asoc/codecs/tfa9874/inc/tfa_platform_interface_definition.h"
+#else
 #include "../asoc/codecs/tfa98xx/inc/tfa_platform_interface_definition.h"
+#endif
 #endif
 
 #include <soc/qcom/subsystem_restart.h>
@@ -879,6 +883,29 @@ static bool afe_token_is_valid(uint32_t token)
 	return true;
 }
 
+#ifdef TFA_ADSP_SUPPORTED
+bool tfa98xx_make_afe_callback(struct apr_client_data *data)
+{
+	uint32_t *payload = data->payload;
+	if (atomic_read(&this_afe.tfa_state) == 1 &&
+			data->payload_size == sizeof(uint32_t)) {
+
+		atomic_set(&this_afe.status, payload[0]);
+		if (payload[0])
+			atomic_set(&this_afe.state, -1);
+		else
+			atomic_set(&this_afe.state, 0);
+
+		atomic_set(&this_afe.tfa_state, 0);
+		wake_up(&this_afe.wait[data->token]);
+
+		return true;
+	} else {
+		return false;
+	}
+}
+#endif /*TFA_ADSP_SUPPORTED*/
+
 static int32_t afe_callback(struct apr_client_data *data, void *priv)
 {
 	uint16_t i = 0;
@@ -938,6 +965,10 @@ static int32_t afe_callback(struct apr_client_data *data, void *priv)
 		uint32_t *payload = data->payload;
 		uint32_t param_id;
 		uint32_t param_id_pos = 0;
+#ifdef TFA_ADSP_SUPPORTED
+		if (tfa98xx_make_afe_callback(data))
+			return 0;
+#endif /*TFA_ADSP_SUPPORTED*/
 
 		if (!payload || (data->token >= AFE_MAX_PORTS)) {
 			pr_err("%s: Error: size %d payload %pK token %d\n",

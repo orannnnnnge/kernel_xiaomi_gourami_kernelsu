@@ -14,14 +14,14 @@
  * GNU General Public License for more details.
  *
  * Datasheets:
- * http://www.ti.com/product/bq24150
- * http://www.ti.com/product/bq24150a
- * http://www.ti.com/product/bq24152
- * http://www.ti.com/product/bq24153
- * http://www.ti.com/product/bq24153a
- * http://www.ti.com/product/bq24155
- * http://www.ti.com/product/bq24157s
- * http://www.ti.com/product/bq24158
+ * https://www.ti.com/product/bq24150
+ * https://www.ti.com/product/bq24150a
+ * https://www.ti.com/product/bq24152
+ * https://www.ti.com/product/bq24153
+ * https://www.ti.com/product/bq24153a
+ * https://www.ti.com/product/bq24155
+ * https://www.ti.com/product/bq24157s
+ * https://www.ti.com/product/bq24158
  */
 
 #include <linux/kernel.h>

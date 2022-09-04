@@ -24,11 +24,13 @@ enum bq27xxx_chip {
 	BQ27546,
 	BQ27742,
 	BQ27545, /* bq27545 */
+	BQ27411,
 	BQ27421, /* bq27421, bq27441, bq27621 */
 	BQ27425,
 	BQ27426,
 	BQ27441,
 	BQ27621,
+	BQ27Z561,
 };
 
 struct bq27xxx_device_info;
@@ -65,6 +67,9 @@ struct bq27xxx_device_info {
 	int charge_design_full;
 	unsigned long last_update;
 	struct delayed_work work;
+#if IS_ENABLED(CONFIG_GOOGLE_BMS)
+	struct power_supply *bms_psy;
+#endif
 	struct power_supply *bat;
 	struct list_head list;
 	struct mutex lock;

@@ -3117,7 +3117,8 @@ static void __exit nvt_driver_exit(void)
 {
 	platform_driver_unregister(&nvt_driver);
 }
-late_initcall(nvt_driver_init);
+module_init(nvt_driver_init);
+module_exit(nvt_driver_exit);
 
 MODULE_DESCRIPTION("Novatek Touchscreen Driver");
 MODULE_LICENSE("GPL");

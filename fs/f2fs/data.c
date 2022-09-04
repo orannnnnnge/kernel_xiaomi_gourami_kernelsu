@@ -152,7 +152,7 @@ static void f2fs_finish_read_bio(struct bio *bio)
 	}
 
 	if (bio->bi_alloc_ts)
-		mm_event_end(F2FS_READ_DATA, bio->bi_alloc_ts);
+		mm_event_record(F2FS_READ_DATA, bio->bi_alloc_ts);
 	if (bio->bi_private)
 		mempool_free(bio->bi_private, bio_post_read_ctx_pool);
 	bio_put(bio);
@@ -2184,7 +2184,7 @@ submit_and_realloc:
 			bio = NULL;
 			goto out;
 		}
-		mm_event_start(&bio->bi_alloc_ts);
+		bio->bi_alloc_ts = jiffies;
 	}
 
 	/*
@@ -2342,7 +2342,7 @@ submit_and_realloc:
 				return ret;
 			}
 			if (!for_write)
-				mm_event_start(&bio->bi_alloc_ts);
+				bio->bi_alloc_ts = jiffies;
 		}
 
 		if (bio_add_page(bio, page, blocksize, 0) < blocksize)

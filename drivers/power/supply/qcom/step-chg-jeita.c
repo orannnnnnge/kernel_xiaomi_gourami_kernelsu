@@ -238,7 +238,9 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 	int batt_id_ohms, rc, hysteresis[2] = {0};
 	u32 jeita_scaling_min_fcc_ua = 0;
 	union power_supply_propval prop = {0, };
+#ifndef CONFIG_FUEL_GAUGE_BQ27Z561
 	union power_supply_propval batt_type = {0, };
+#endif
 
 	handle = of_get_property(chip->dev->of_node,
 			"qcom,battery-data", NULL);
@@ -264,6 +266,7 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 	if (batt_id_ohms < 0)
 		return -EBUSY;
 
+#ifndef CONFIG_FUEL_GAUGE_BQ27Z561
 	rc = power_supply_get_property(chip->bms_psy,
 			POWER_SUPPLY_PROP_BATTERY_TYPE, &batt_type);
 	if (rc < 0) {
@@ -271,9 +274,15 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 		return -EBUSY;
 	}
 	pr_info("battery type=%s\n", batt_type.strval);
+#endif
 
+#ifndef CONFIG_FUEL_GAUGE_BQ27Z561
 	profile_node = of_batterydata_get_best_profile(batt_node,
 					batt_id_ohms / 1000, batt_type.strval);
+#else
+	profile_node = of_batterydata_get_best_profile(batt_node,
+					batt_id_ohms / 1000, NULL);
+#endif
 	if (IS_ERR(profile_node))
 		return PTR_ERR(profile_node);
 
@@ -321,8 +330,13 @@ static int get_step_chg_jeita_setting_from_profile(struct step_chg_info *chip)
 	chip->ocv_based_step_chg =
 		of_property_read_bool(profile_node, "qcom,ocv-based-step-chg");
 	if (chip->ocv_based_step_chg) {
+#ifndef CONFIG_FUEL_GAUGE_BQ27Z561
 		chip->step_chg_config->param.psy_prop =
 				POWER_SUPPLY_PROP_VOLTAGE_OCV;
+#else
+		chip->step_chg_config->param.psy_prop =
+				POWER_SUPPLY_PROP_VOLTAGE_NOW;
+#endif
 		chip->step_chg_config->param.prop_name = "OCV";
 		chip->step_chg_config->param.rise_hys = 0;
 		chip->step_chg_config->param.fall_hys = 0;
