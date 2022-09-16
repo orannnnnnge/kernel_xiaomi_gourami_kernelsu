@@ -18,6 +18,7 @@
 
 &pm8150l_lcdb {
 	status = "ok";
+	/delete-property/ qcom,voltage-step-ramp;
 };
 
 /* Camera */

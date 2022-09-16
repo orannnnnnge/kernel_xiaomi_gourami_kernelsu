@@ -51,7 +51,7 @@
 		google,dsi-bl-cmd-high-byte-offset = <8>;
 		google,dsi-panel-dimming-enable;
 
-		qcom,mdss-dsi-reset-sequence = <0 10>, <1 15>;
+		qcom,mdss-dsi-reset-sequence = <0 12>, <1 15>;
 		qcom,mdss-dsi-lp11-init;
 
 		qcom,mdss-pan-physical-width-dimension = <70>;
@@ -126,7 +126,8 @@
 					15 01 00 00 00 00 02 E9 10
 					15 00 00 00 00 00 02 B0 16
 					39 00 00 00 00 00 03 D1 2E 1E	/* HFP/RR Setting */
-					15 00 00 00 00 00 02 F7 03		/* Panel Update */
+					15 01 00 00 00 00 02 60 00		/* 60HZ Tranzition */
+					15 00 00 00 00 00 02 F7 0F		/* Panel Update */
 					39 01 00 00 00 00 03 F0 A5 A5
 					39 01 00 00 00 00 03 FC A5 A5
 					/* CASET/PASET Setting */
@@ -134,18 +135,9 @@
 					39 01 00 00 00 00 05 2B 00 00 09 5F
 					/* Sync Setting */
 					39 01 00 00 00 00 03 F0 5A 5A
-					15 00 00 00 00 00 02 60 10						// 0x00 : 96/60/48 Hz
 					15 00 00 00 00 00 02 B0 0B
 					39 00 00 00 00 00 03 D8 59 70				 	// 0x59 0x70 : 120/60 Hz
-					15 00 00 00 00 00 02 F7 03
-					39 01 00 00 00 00 03 F0 A5 A5
-					/* 60hz Transition */
-					15 01 00 00 00 00 02 60 00
-					/* ELVSS Setting */
-					39 01 00 00 00 00 03 F0 5A 5A
-					39 01 00 00 00 00 03 FC 5A 5A
-					39 01 00 00 00 00 07 B7 01 5C CB 0D C0 16 /* Elvss Return */
-					39 00 00 00 00 00 03 FC A5 A5
+					15 00 00 00 00 00 02 F7 0F
 					39 01 00 00 00 00 03 F0 A5 A5
 					/* Brightness Setting */
 					15 01 00 00 6E 00 02 53 28
@@ -160,53 +152,31 @@
 
 				qcom,mdss-dsi-timing-switch-command = [
 					/* write ctl 60hz */
+					39 01 00 00 00 00 03 F0 5A 5A
 					15 01 00 00 00 00 02 60 00
+					15 00 00 00 00 00 02 F7 0F
+					39 01 00 00 00 00 03 F0 A5 A5
 				];
 				qcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";
 
 				qcom,mdss-dsi-lp1-command = [
 					05 01 00 00 00 00 01 28
-					39 00 00 00 00 00 03 F0 5A 5A
-					39 00 00 00 00 00 03 FC 5A 5A
-					/* HLPM on: 60nit */
-					15 00 00 00 00 00 02 E3 00					/* HLPM Select : HLPM(00)/ALPM(01) */
-					15 00 00 00 00 00 02 60 10      			/* Freq setting */
-					15 00 00 00 00 00 02 B0 0B					/* Global Para */
-					39 00 00 00 00 00 03 BB 00 14				/* HLPM AOR Setting ( 60 nit ) */
-					15 00 00 00 00 00 02 B0 5F
-					39 00 00 00 00 00 05 D3 3B 0F 3B 0F			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 78
-					39 00 00 00 00 00 06 D3 32 00 00 03 32		/* HFP Setting */
-					15 00 00 00 00 00 02 B0 04
-					39 00 00 00 00 00 05 D9 48 44 45 4A			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 16
-					39 00 00 00 00 00 03 D1 1D 10				/* HFP Setting */
-					15 00 00 00 00 00 02 F7 03					/* Panel Update */
-					15 00 00 00 01 00 02 53 23					/* HLPM On Setting */
-					39 00 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					/* HLPM on: 50nit */
+					15 01 00 00 00 00 02 60 00
+					15 01 00 00 01 00 02 53 22
+					15 00 00 00 00 00 02 F7 0F
 					39 01 00 00 11 00 03 F0 A5 A5
 				];
 
 				qcom,mdss-dsi-nolp-command = [
 					05 01 00 00 00 00 01 28
-					/* Image write for Normal Mode */
-					39 00 00 00 00 00 03 F0 5A 5A
-					39 00 00 00 00 00 03 FC 5A 5A
-					15 00 00 00 00 00 02 B0 5F
-					39 00 00 00 00 00 05 D3 42 0F 42 0F         /* HFP Setting */
-					15 00 00 00 00 00 02 B0 78
-					39 00 00 00 00 00 06 D3 41 00 00 03 41		/* HFP Setting */
-					15 00 00 00 00 00 02 B0 04
-					39 00 00 00 00 00 05 D9 48 44 45 4A         /* HFP Setting */
-					15 00 00 00 00 00 02 B0 16
-					39 00 00 00 00 00 03 D1 2E 1E               /* HFP Setting */
-					15 00 00 00 00 00 02 F7 03                  /* Panel Update */
-					39 00 00 00 00 00 03 51 00 00				/* 0nit Setting */
-					15 00 00 00 00 00 02 53 28					/* ALPM/HLPM off */
-					15 00 00 00 00 00 02 60 00                  /* Freq Setting */
-					39 00 00 00 00 00 07 B7 01 5C CB 0D C0 16	/* Elvss Return */
-					39 00 00 00 00 00 03 FC A5 A5
-					39 01 00 00 00 00 03 F0 A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					/* HLPM off */
+					15 01 00 00 00 00 02 60 00
+					15 01 00 00 01 00 02 53 28
+					15 00 00 00 00 00 02 F7 0F
+					39 01 00 00 22 00 03 F0 A5 A5
 					05 01 00 00 00 00 01 29
 				];
 
@@ -290,7 +260,8 @@
 					15 01 00 00 00 00 02 E9 10
 					15 00 00 00 00 00 02 B0 16
 					39 00 00 00 00 00 03 D1 2E 1E	/* HFP/RR Setting */
-					15 00 00 00 00 00 02 F7 03		/* Panel Update */
+					15 01 00 00 00 00 02 60 10		/* 120HZ Tranzition */
+					15 00 00 00 00 00 02 F7 0F		/* Panel Update */
 					39 01 00 00 00 00 03 F0 A5 A5
 					39 01 00 00 00 00 03 FC A5 A5
 					/* CASET/PASET Setting */
@@ -298,18 +269,9 @@
 					39 01 00 00 00 00 05 2B 00 00 09 5F
 					/* Sync Setting */
 					39 01 00 00 00 00 03 F0 5A 5A
-					15 00 00 00 00 00 02 60 10						// 0x00 : 96/60/48 Hz
 					15 00 00 00 00 00 02 B0 0B
 					39 00 00 00 00 00 03 D8 59 70				 	// 0x59 0x70 : 120/60 Hz
-					15 00 00 00 00 00 02 F7 03
-					39 01 00 00 00 00 03 F0 A5 A5
-					/* 120hz Transition */
-					15 01 00 00 00 00 02 60 10
-					/* ELVSS Setting */
-					39 01 00 00 00 00 03 F0 5A 5A
-					39 01 00 00 00 00 03 FC 5A 5A
-					39 01 00 00 00 00 07 B7 01 5C CB 0D C0 16 /* Elvss Return */
-					39 00 00 00 00 00 03 FC A5 A5
+					15 00 00 00 00 00 02 F7 0F
 					39 01 00 00 00 00 03 F0 A5 A5
 					/* Brightness Setting */
 					15 01 00 00 6E 00 02 53 28
@@ -324,53 +286,31 @@
 
 				qcom,mdss-dsi-timing-switch-command = [
 					/* write ctl 120hz */
+					39 01 00 00 00 00 03 F0 5A 5A
 					15 01 00 00 00 00 02 60 10
+					15 00 00 00 00 00 02 F7 0F
+					39 01 00 00 00 00 03 F0 A5 A5
 				];
 				qcom,mdss-dsi-timing-switch-command-state = "dsi_lp_mode";
 
 				qcom,mdss-dsi-lp1-command = [
 					05 01 00 00 00 00 01 28
-					39 00 00 00 00 00 03 F0 5A 5A
-					39 00 00 00 00 00 03 FC 5A 5A
-					/* HLPM on: 60nit */
-					15 00 00 00 00 00 02 E3 00					/* HLPM Select : HLPM(00)/ALPM(01) */
-					15 00 00 00 00 00 02 60 10      			/* Freq setting */
-					15 00 00 00 00 00 02 B0 0B					/* Global Para */
-					39 00 00 00 00 00 03 BB 00 14				/* HLPM AOR Setting ( 60 nit ) */
-					15 00 00 00 00 00 02 B0 5F
-					39 00 00 00 00 00 05 D3 3B 0F 3B 0F			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 78
-					39 00 00 00 00 00 06 D3 32 00 00 03 32		/* HFP Setting */
-					15 00 00 00 00 00 02 B0 04
-					39 00 00 00 00 00 05 D9 48 44 45 4A			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 16
-					39 00 00 00 00 00 03 D1 1D 10				/* HFP Setting */
-					15 00 00 00 00 00 02 F7 03					/* Panel Update */
-					15 00 00 00 01 00 02 53 23					/* HLPM On Setting */
-					39 00 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					/* HLPM on: 50nit */
+					15 01 00 00 00 00 02 60 00
+					15 01 00 00 01 00 02 53 22
+					15 00 00 00 00 00 02 F7 0F
 					39 01 00 00 11 00 03 F0 A5 A5
 				];
 
 				qcom,mdss-dsi-nolp-command = [
 					05 01 00 00 00 00 01 28
-					39 00 00 00 00 00 03 F0 5A 5A
-					39 00 00 00 00 00 03 FC 5A 5A
+					39 01 00 00 00 00 03 F0 5A 5A
 					/* HLPM off */
-					15 00 00 00 00 00 02 B0 5F
-					39 00 00 00 00 00 05 D3 42 0F 42 0F         /* HFP Setting */
-					15 00 00 00 00 00 02 B0 78
-					39 00 00 00 00 00 06 D3 41 00 00 03 41		/* HFP Setting */
-					15 00 00 00 00 00 02 B0 04
-					39 00 00 00 00 00 05 D9 48 44 45 4A         /* HFP Setting */
-					15 00 00 00 00 00 02 B0 16
-					39 00 00 00 00 00 03 D1 2E 1E               /* HFP Setting */
-					15 00 00 00 00 00 02 F7 03                  /* Panel Update */
-					39 00 00 00 00 00 03 51 00 00				/* 0nit Setting */
-					15 00 00 00 00 00 02 53 28					/* ALPM/HLPM off */
-					15 00 00 00 00 00 02 60 10                  /* Freq Setting */
-					39 00 00 00 00 00 07 B7 01 5C CB 0D C0 16	/* Elvss Return */
-					39 00 00 00 00 00 03 FC A5 A5
-					39 01 00 00 00 00 03 F0 A5 A5
+					15 01 00 00 00 00 02 60 10
+					15 01 00 00 01 00 02 53 28
+					15 00 00 00 00 00 02 F7 0F
+					39 01 00 00 22 00 03 F0 A5 A5
 					05 01 00 00 00 00 01 29
 				];
 
@@ -408,24 +348,11 @@
 				label = "low";
 				google,dsi-lp-brightness-threshold = <40>;
 				google,dsi-lp-command = [
-					39 00 00 00 00 00 03 F0 5A 5A
-					39 00 00 00 00 00 03 FC 5A 5A
-					/* HLPM on: 10nit */
-					15 00 00 00 00 00 02 E3 00					/* HLPM Select : HLPM(00)/ALPM(01) */
-					15 00 00 00 00 00 02 60 10      			/* Freq setting */
-					15 00 00 00 00 00 02 B0 0B					/* Global Para */
-					39 00 00 00 00 00 03 BB 08 00				/* HLPM AOR Setting ( 10 nit ) */
-					15 00 00 00 00 00 02 B0 5F
-					39 00 00 00 00 00 05 D3 3B 0F 3B 0F			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 78
-					39 00 00 00 00 00 06 D3 32 00 00 03 32		/* HFP Setting */
-					15 00 00 00 00 00 02 B0 04
-					39 00 00 00 00 00 05 D9 48 44 45 4A			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 16
-					39 00 00 00 00 00 03 D1 1D 10				/* HFP Setting */
-					15 00 00 00 00 00 02 F7 03					/* Panel Update */
-					15 00 00 00 01 00 02 53 23					/* HLPM On Setting */
-					39 00 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					/* HLPM on: 50nit */
+					15 01 00 00 00 00 02 60 00
+					15 01 00 00 01 00 02 53 23
+					15 00 00 00 00 00 02 F7 0F
 					39 01 00 00 11 00 03 F0 A5 A5
 					05 01 00 00 00 00 01 29
 				];
@@ -436,146 +363,15 @@
 				label = "high";
 				google,dsi-lp-brightness-threshold = <1023>;
 				google,dsi-lp-command = [
-					39 00 00 00 00 00 03 F0 5A 5A
-					39 00 00 00 00 00 03 FC 5A 5A
-					/* HLPM on: 60nit */
-					15 00 00 00 00 00 02 E3 00					/* HLPM Select : HLPM(00)/ALPM(01) */
-					15 00 00 00 00 00 02 60 10      			/* Freq setting */
-					15 00 00 00 00 00 02 B0 0B					/* Global Para */
-					39 00 00 00 00 00 03 BB 00 14				/* HLPM AOR Setting ( 60 nit ) */
-					15 00 00 00 00 00 02 B0 5F
-					39 00 00 00 00 00 05 D3 3B 0F 3B 0F			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 78
-					39 00 00 00 00 00 06 D3 32 00 00 03 32		/* HFP Setting */
-					15 00 00 00 00 00 02 B0 04
-					39 00 00 00 00 00 05 D9 48 44 45 4A			/* HFP Setting */
-					15 00 00 00 00 00 02 B0 16
-					39 00 00 00 00 00 03 D1 1D 10				/* HFP Setting */
-					15 00 00 00 00 00 02 F7 03					/* Panel Update */
-					15 00 00 00 01 00 02 53 23					/* HLPM On Setting */
-					39 00 00 00 00 00 03 FC A5 A5
+					39 01 00 00 00 00 03 F0 5A 5A
+					/* HLPM on: 50nit */
+					15 01 00 00 00 00 02 60 00
+					15 01 00 00 01 00 02 53 22
+					15 00 00 00 00 00 02 F7 0F
 					39 01 00 00 11 00 03 F0 A5 A5
 					05 01 00 00 00 00 01 29
 				];
 				google,dsi-lp-command-state = "dsi_lp_mode";
-			};
-		};
-
-		google,elvss-ranges {
-			/* This is for AOD/HBM mode */
-			google,dsi-elvss-range-off-command = [
-				/* Set ELVSS to default value */
-				39 01 00 00 00 00 03 F0 5A 5A
-				15 01 00 00 00 00 02 B0 05
-				15 01 00 00 00 00 02 B7 91
-				39 01 00 00 00 00 03 F0 A5 A5
-			];
-			google,dsi-elvss-range-commands-state =
-				"dsi_lp_mode";
-
-			elvss-range@0 {
-				google,dsi-elvss-range-brightness-threshold =
-					<40>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x93 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 93
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
-			};
-
-			elvss-range@1 {
-				google,dsi-elvss-range-brightness-threshold =
-					<60>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x93 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 93
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
-			};
-
-			elvss-range@2 {
-				google,dsi-elvss-range-brightness-threshold =
-					<160>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x92 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 92
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
-			};
-
-			elvss-range@3 {
-				google,dsi-elvss-range-brightness-threshold =
-					<699>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x94 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 94
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
-			};
-
-			elvss-range@4 {
-				google,dsi-elvss-range-brightness-threshold =
-					<859>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x93 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 93
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
-			};
-
-			elvss-range@5 {
-				google,dsi-elvss-range-brightness-threshold =
-					<935>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x92 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 92
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
-			};
-
-			elvss-range@6 {
-				google,dsi-elvss-range-brightness-threshold =
-					<1023>;
-
-				google,dsi-elvss-range-update-command = [
-					/* Set ELVSS register to 0x91 */
-					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 05
-					15 01 00 00 00 00 02 B7 91
-					39 01 00 00 00 00 03 F0 A5 A5
-				];
-				google,dsi-elvss-range-commands-state =
-					"dsi_lp_mode";
 			};
 		};
 

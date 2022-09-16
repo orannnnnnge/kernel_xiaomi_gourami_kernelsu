@@ -370,12 +370,12 @@ static int max_ires_curr_ma_table[MAX_IRES_LEVELS] = {
 	FLASH_LED_IRES12P5_MAX_CURR_MA, FLASH_LED_IRES10P0_MAX_CURR_MA,
 	FLASH_LED_IRES7P5_MAX_CURR_MA, FLASH_LED_IRES5P0_MAX_CURR_MA
 };
-/* Added by zhaoqingsong@xiaomi.com */
+
 static struct flash_node_data *g_torch_0;
 static struct flash_node_data *g_torch_1;
 static struct flash_switch_data *g_switch_0;
 static struct flash_switch_data *g_switch_1;
-/* End of Added by qudao1@xiaomi.com */
+
 static inline int get_current_reg_code(int target_curr_ma, int ires_ua)
 {
 	if (!ires_ua || !target_curr_ma || (target_curr_ma < (ires_ua / 1000)))
@@ -1900,11 +1900,9 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 						strlen("led:torch"))) {
 		fnode = container_of(led_cdev, struct flash_node_data, cdev);
 		led = dev_get_drvdata(&fnode->pdev->dev);
-    /* Added by zhaoqingsong@xiaomi.com */
 	} else if (!strncmp(led_cdev->name, "flashlight", strlen("flashlight"))) {
 		fnode = container_of(led_cdev, struct flash_node_data, cdev);
 		led = dev_get_drvdata(&fnode->pdev->dev);
-    /* End of Added by qudao1@xiaomi.com */
 	}
 
 	if (!led) {
@@ -1918,7 +1916,6 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 		if (rc < 0)
 			pr_err("Failed to set flash LED switch rc=%d\n", rc);
 	} else if (fnode) {
-	/* Added by zhaoqingsong@xiaomi.com */
 		if (!strncmp(led_cdev->name, "flashlight", strlen("flashlight"))) {
 			if (g_torch_0 && g_torch_1 && g_switch_0 && g_switch_1) {
 				pr_err("flash light fnode %d value %d", __LINE__, value);
@@ -1930,7 +1927,6 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 		} else {
 			qpnp_flash_led_node_set(fnode, value);
 		}
-	/* End of Added by qudao1@xiaomi.com */
 	}
 
 	spin_unlock(&led->lock);
@@ -3088,10 +3084,9 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 	struct device_node *node, *temp;
 	const char *temp_string;
 	int rc, i = 0, j = 0;
-	/* Added by zhaoqingsong@xiaomi.com */
+
 	struct flash_node_data *fnode;
 	struct flash_switch_data *snode;
-	/* End of Added by qudao1@xiaomi.com */
 	node = pdev->dev.of_node;
 	if (!node) {
 		pr_err("No flash LED nodes defined\n");
@@ -3176,30 +3171,24 @@ static int qpnp_flash_led_probe(struct platform_device *pdev)
 					i, rc);
 				goto error_led_register;
 			}
-		#if 1
+
 			fnode = &led->fnode[i];
-			if (!strcmp("led:torch_0", fnode->cdev.name)) {
+			if (!strcmp("led:torch_0", fnode->cdev.name))
 				g_torch_0 = fnode;
-			} else if (!strcmp("led:torch_1",  fnode->cdev.name)) {
+			else if (!strcmp("led:torch_1", fnode->cdev.name))
 				g_torch_1 = fnode;
-			}
-		#endif
 			i++;
 		}
 
 		if (!strcmp("switch", temp_string)) {
 			rc = qpnp_flash_led_parse_and_register_switch(led,
 					&led->snode[j], temp);
-	/* Added by zhaoqingsong@xiaomi.com */
-			#if 1
+
 			snode = &led->snode[j];
-			if (!strcmp("led:switch_0", snode->cdev.name)) {
+			if (!strcmp("led:switch_0", snode->cdev.name))
 				g_switch_0 = snode;
-			} else if (!strcmp("led:switch_1", snode->cdev.name)) {
+			else if (!strcmp("led:switch_1", snode->cdev.name))
 				g_switch_1 = snode;
-			}
-			#endif
-	/* End of Added by qudao1@xiaomi.com */
 			if (rc < 0) {
 				pr_err("Unable to parse and register switch node, rc=%d\n",
 					rc);
