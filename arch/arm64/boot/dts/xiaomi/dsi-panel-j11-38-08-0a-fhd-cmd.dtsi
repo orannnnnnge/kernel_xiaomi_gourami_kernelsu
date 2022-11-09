@@ -124,8 +124,6 @@
 					39 01 00 00 00 00 03 FC A5 A5
 					/* Dimming Delay control */
 					39 01 00 00 00 00 03 F0 5A 5A
-					15 01 00 00 00 00 02 B0 01
-					15 01 00 00 00 00 02 B7 53
 					/* Set Dimming frames to 8 */
 					15 01 00 00 00 00 02 B0 06
 					15 01 00 00 00 00 02 B7 08
@@ -135,8 +133,8 @@
 					05 01 00 00 00 00 01 29
 				];
 				qcom,mdss-dsi-off-command = [
-					05 01 00 00 14 00 01 28       /* display off */
-					05 01 00 00 00 00 01 10       /* sleep in */
+					05 01 00 00 20 00 01 28       /* display off */
+					05 01 00 00 78 00 01 10       /* sleep in */
 				];
 				qcom,mdss-dsi-on-command-state = "dsi_lp_mode";
 				qcom,mdss-dsi-off-command-state = "dsi_lp_mode";

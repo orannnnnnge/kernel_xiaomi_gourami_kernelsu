@@ -447,7 +447,7 @@
 	};
 
 	pm8150b-bcl-lvl0 {
-		polling-delay-passive = <100>;
+		polling-delay-passive = <1000>;
 		cooling-maps {
 			bcl_cpu4 {
 				trip = <&b_bcl_lvl0>;
@@ -467,7 +467,7 @@
 	};
 
 	pm8150b-bcl-lvl1 {
-		polling-delay-passive = <100>;
+		polling-delay-passive = <1000>;
 		cooling-maps {
 			bcl_cpu4 {
 				trip = <&b_bcl_lvl1>;
@@ -489,7 +489,7 @@
 	};
 
 	pm8150b-bcl-lvl2 {
-		polling-delay-passive = <100>;
+		polling-delay-passive = <1000>;
 		cooling-maps {
 			bcl_cpu0 {
 				trip = <&b_bcl_lvl2>;
@@ -505,6 +505,7 @@
 	};
 
 	pm8150b-ibat-lvl0 {
+		polling-delay-passive = <1000>;
 		cooling-maps {
 			ibat_cpu4 {
 				trip = <&ibat_lvl0>;
@@ -524,6 +525,7 @@
 	};
 
 	pm8150b-ibat-lvl1 {
+		polling-delay-passive = <1000>;
 		cooling-maps {
 			ibat_cpu4 {
 				trip = <&ibat_lvl1>;

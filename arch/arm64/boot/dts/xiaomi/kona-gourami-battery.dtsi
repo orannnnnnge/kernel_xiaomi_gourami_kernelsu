@@ -95,6 +95,8 @@
 	google,fg-cycle-disable;
 	qcom,cl-wt-enable;
 	qcom,soc-scale-mode-en;
+	qcom,fg-batt-temp-delta = <6>;
+	qcom,fg-batt-temp-hyst = <1>;
 	qcom,fg-cutoff-current = <200>;
 	qcom,fg-cutoff-voltage = <3300>;
 	qcom,fg-empty-voltage = <3000>;
@@ -131,8 +133,9 @@
 		google,chg-last-tier-dec-current = <50000>;
 		google,chg-last-tier-term-current = <190000>;
 
-		google,aacr-ref-cycles = <100 200 500 800>;
-		google,aacr-ref-fade10 = <0 5 35 65>;
+		google,aacr-disable;
+		google,aacr-ref-cycles = <300 400 500 600 700 800>;
+		google,aacr-ref-fade10 = <2  14  26  36  45  54>;
 
 		/* battery poll rate */
 		google,update-interval = <30000>;

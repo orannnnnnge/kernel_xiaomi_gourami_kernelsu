@@ -27,17 +27,17 @@
 				type = "passive";
 			};
 			skin_cpu_light: skin-cpu-light {
-				temperature = <43000>;
+				temperature = <39000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
 			skin_cpu_moderate_pre_lv1: skin-cpu-moderate-pre-lv1 {
-				temperature = <47000>;
+				temperature = <43000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
 			skin_cpu_moderate: skin-cpu-moderate {
-				temperature = <49000>;
+				temperature = <45000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
@@ -58,23 +58,23 @@
 			cpu4-turbo {
 				trip = <&skin_cpu_light>;
 				cooling-device =
-					<&CPU4 1 2>;
+					<&CPU4 3 5>;
 			};
 			cpu7-turbo {
 				trip = <&skin_cpu_light>;
 				cooling-device =
-					<&CPU7 2 2>;
+					<&CPU7 4 4>;
 			};
 			/* moderate pre level 1 throttling */
 			cpu4-nominal-l1 {
 				trip = <&skin_cpu_moderate_pre_lv1>;
 				cooling-device =
-					<&CPU4 3 3>;
+					<&CPU4 5 5>;
 			};
 			cpu7-nominal-l1 {
 				trip = <&skin_cpu_moderate_pre_lv1>;
 				cooling-device =
-					<&CPU7 2 4>;
+					<&CPU7 4 6>;
 			};
 			/* moderate throttling */
 			cpu0-nominal {
@@ -85,28 +85,28 @@
 			cpu4-nominal {
 				trip = <&skin_cpu_moderate>;
 				cooling-device =
-					<&CPU4 4 4>;
+					<&CPU4 6 6>;
 			};
 			cpu7-nominal {
 				trip = <&skin_cpu_moderate>;
 				cooling-device =
-					<&CPU7 5 5>;
+					<&CPU7 8 8>;
 			};
 			/* severe throttling */
 			cpu0-svs-l1 {
 				trip = <&skin_cpu_severe>;
 				cooling-device =
-					<&CPU0 4 4>;
+					<&CPU0 12 12>;
 			};
 			cpu4-svs-l1 {
 				trip = <&skin_cpu_severe>;
 				cooling-device =
-					<&CPU4 6 6>;
+					<&CPU4 15 15>;
 			};
 			cpu7-svs-l1 {
 				trip = <&skin_cpu_severe>;
 				cooling-device =
-					<&CPU7 13 13>;
+					<&CPU7 17 17>;
 			};
 		};
 	};
@@ -210,12 +210,12 @@
 			cpu4-svs {
 				trip = <&skin_critical>;
 				cooling-device =
-					<&CPU4 6 6>;
+					<&CPU4 13 13>;
 			};
 			cpu7-svs {
 				trip = <&skin_critical>;
 				cooling-device =
-					<&CPU7 7 7>;
+					<&CPU7 17 17>;
 			};
 			/* emergency pre level 1 throttling */
 			gpu-svs {
@@ -231,12 +231,12 @@
 			cpu4-low-svs {
 				trip = <&skin_emergency_pre_lv1>;
 				cooling-device =
-					<&CPU4 11 11>;
+					<&CPU4 14 14>;
 			};
 			cpu7-low-svs {
 				trip = <&skin_emergency_pre_lv1>;
 				cooling-device =
-					<&CPU7 15 15>;
+					<&CPU7 19 19>;
 			};
 		};
 	};

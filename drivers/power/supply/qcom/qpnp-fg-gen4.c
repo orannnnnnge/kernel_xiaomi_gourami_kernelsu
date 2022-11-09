@@ -6244,7 +6244,7 @@ static int fg_parse_esr_cal_params(struct fg_dev *fg)
 }
 
 #define BTEMP_DELTA_LOW			0
-#define BTEMP_DELTA_HIGH		3
+#define BTEMP_DELTA_HIGH		10
 
 static void fg_gen4_parse_batt_temp_dt(struct fg_gen4_chip *chip)
 {
