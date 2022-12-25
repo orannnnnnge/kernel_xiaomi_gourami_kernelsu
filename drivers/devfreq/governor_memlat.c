@@ -298,6 +298,10 @@ static int devfreq_memlat_get_freq(struct devfreq *df,
 					hw->core_stats[i].stall_pct,
 					hw->core_stats[i].wb_pct, ratio);
 
+		if (!hw->core_stats[i].inst_count
+		    || !hw->core_stats[i].freq)
+			continue;
+
 		if (((ratio <= node->ratio_ceil
 		      && hw->core_stats[i].stall_pct >= node->stall_floor) ||
 		      (hw->core_stats[i].wb_pct >= node->wb_pct_thres
@@ -497,7 +501,7 @@ static struct memlat_node *register_common(struct device *dev,
 	if (!node)
 		return ERR_PTR(-ENOMEM);
 
-	node->ratio_ceil = 10;
+	node->ratio_ceil = 400;
 	node->wb_pct_thres = 100;
 	node->wb_filter_ratio = 25000;
 	node->hw = hw;

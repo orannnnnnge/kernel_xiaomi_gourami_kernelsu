@@ -170,13 +170,16 @@ static int devfreq_gpubw_get_target(struct devfreq *df,
 		act_level = (act_level < 0) ? 0 : act_level;
 		act_level = (act_level >= priv->bus.num) ?
 		(priv->bus.num - 1) : act_level;
-		if ((norm_cycles > priv->bus.up[act_level] ||
+		if (((norm_cycles > priv->bus.up[act_level] ||
 				wait_active_percent > WAIT_THRESHOLD) &&
-				gpu_percent > CAP)
+				gpu_percent > CAP) || (b.gpu_minfreq == *freq
+				&& wait_active_percent > 80))
 			bus_profile->flag = DEVFREQ_FLAG_FAST_HINT;
 		else if (norm_cycles < priv->bus.down[act_level] && level)
 			bus_profile->flag = DEVFREQ_FLAG_SLOW_HINT;
 	}
+
+	bus_profile->wait_active_percent = wait_active_percent;
 
 	/* Calculate the AB vote based on bus width if defined */
 	if (priv->bus.width) {
@@ -338,4 +341,3 @@ module_exit(devfreq_gpubw_exit);
 
 MODULE_DESCRIPTION("GPU bus bandwidth voting driver. Uses VBIF counters");
 MODULE_LICENSE("GPL v2");
-

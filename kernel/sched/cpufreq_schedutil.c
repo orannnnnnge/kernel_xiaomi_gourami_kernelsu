@@ -16,6 +16,11 @@
 #include <linux/sched/cpufreq.h>
 #include <trace/events/power.h>
 #include <linux/sched/sysctl.h>
+#include <linux/perf_event.h>
+#include <linux/jiffies.h>
+#include <linux/pm_qos.h>
+
+#include "../../drivers/devfreq/governor_memlat.h"
 
 struct sugov_tunables {
 	struct gov_attr_set	attr_set;
@@ -26,6 +31,12 @@ struct sugov_tunables {
 	unsigned int		hispeed_freq;
 	unsigned int		rtg_boost_freq;
 	bool			pl;
+
+	/* The field below for PMU poll */
+	unsigned int		lcpi_threshold;
+	unsigned int		spc_threshold;
+	unsigned int		limit_frequency;
+	bool			pmu_limit_enable;
 };
 
 struct sugov_policy {
@@ -61,6 +72,11 @@ struct sugov_policy {
 
 	bool			limits_changed;
 	bool			need_freq_update;
+
+	struct freq_qos_request	pmu_max_freq_req;
+	cpumask_t		pmu_ignored_mask;
+	bool			under_pmu_throttle;
+	bool			relax_pmu_throttle;
 };
 
 struct sugov_cpu {
@@ -87,11 +103,97 @@ struct sugov_cpu {
 #endif
 };
 
+static cpumask_t pixel_sched_governor_mask = CPU_MASK_NONE;
 static DEFINE_PER_CPU(struct sugov_cpu, sugov_cpu);
 static unsigned int stale_ns;
 static DEFINE_PER_CPU(struct sugov_tunables *, cached_tunables);
+static struct kthread_worker pmu_worker;
+static struct kthread_delayed_work pmu_work;
+static DEFINE_MUTEX(pmu_poll_enable_lock);
+extern int create_sysfs_node(void);
+extern bool pmu_poll_enabled;
+extern unsigned int pmu_poll_time_ms;
+
+extern int get_ev_data(int cpu, int inst_ev, int cyc_ev, int stall_ev, int cachemiss_ev,
+			unsigned long *inst, unsigned long *cyc,
+			unsigned long *stall, unsigned long *cachemiss);
 
 /************************ Governor internals ***********************/
+
+static bool check_pmu_limit_conditions(u64 lcpi, u64 spc, struct sugov_policy *sg_policy)
+{
+	if (sg_policy->tunables->lcpi_threshold <= lcpi &&
+	    sg_policy->tunables->spc_threshold <= spc)
+		return true;
+
+	return false;
+}
+
+/*
+ * Check those ignored cpus of pmu throttle - cpus did not meet pmu limit condidtion but have
+ * lower frequency than pmu limit frequency. We need to check if any such cpu has hihger frequency
+ * demand when there is util change in a cluster.
+ * Return: true to signal the caller to continue searching, false to signal the caller to stop
+ * searching because a target cpu in that cluster is found.
+ */
+static inline bool update_pmu_throttle_on_ignored_cpus(struct sugov_policy *sg_policy,
+				unsigned long util, unsigned long freq, unsigned long cap, int cpu)
+{
+	if (sg_policy->tunables->pmu_limit_enable && sg_policy->under_pmu_throttle &&
+	    !sg_policy->relax_pmu_throttle &&
+	    cpumask_test_cpu(cpu, &sg_policy->pmu_ignored_mask) &&
+	    map_util_freq(util, freq, cap, cpu) > sg_policy->tunables->limit_frequency) {
+		sg_policy->relax_pmu_throttle = true;
+
+		return false;
+	}
+
+	return true;
+}
+
+static inline void trace_pmu_limit(struct sugov_policy *sg_policy)
+{
+	if (trace_clock_set_rate_enabled()) {
+		char trace_name[32] = {0};
+		scnprintf(trace_name, sizeof(trace_name), "pmu_limit_cpu%d",
+			  sg_policy->policy->cpu);
+		trace_clock_set_rate(trace_name, sg_policy->under_pmu_throttle ?
+				     sg_policy->tunables->limit_frequency :
+				     sg_policy->policy->cpuinfo.max_freq,
+				     raw_smp_processor_id());
+	}
+}
+
+static bool check_sg_policy_initialized(void)
+{
+	unsigned int cpu = 0;
+	struct cpufreq_policy *policy = NULL;
+	struct sugov_policy *sg_policy = NULL;
+
+	if (cpumask_weight(&pixel_sched_governor_mask) != CPU_NR)
+		return false;
+
+	while (cpu < CPU_NR) {
+		policy = cpufreq_cpu_get(cpu);
+		if (!policy) {
+			pr_err("no cpufreq policy for cpu %d\n", cpu);
+			cpufreq_cpu_put(policy);
+			return false;
+		}
+
+		sg_policy = policy->governor_data;
+		if (!sg_policy) {
+			pr_err("no sugov policy for cpu %d\n", cpu);
+			cpufreq_cpu_put(policy);
+			return false;
+		}
+
+		cpu = cpumask_last(policy->related_cpus) + 1;
+		cpufreq_cpu_put(policy);
+	}
+
+	return true;
+}
 
 static bool sugov_should_update_freq(struct sugov_policy *sg_policy, u64 time)
 {
@@ -319,7 +421,7 @@ static unsigned int get_next_freq(struct sugov_policy *sg_policy,
 	unsigned int freq = arch_scale_freq_invariant() ?
 				policy->cpuinfo.max_freq : policy->cur;
 
-	freq = map_util_freq(util, freq, max);
+	freq = map_util_freq(util, freq, max, policy->cpu);
 	trace_sugov_next_freq(policy->cpu, util, max, freq);
 
 	if (freq == sg_policy->cached_raw_freq && !sg_policy->need_freq_update)
@@ -747,6 +849,7 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 	struct cpufreq_policy *policy = sg_policy->policy;
 	unsigned long util = 0, max = 1;
 	unsigned int j;
+	bool update_pmu_limit = true;
 
 	for_each_cpu(j, policy->cpus) {
 		struct sugov_cpu *j_sg_cpu = &per_cpu(sugov_cpu, j);
@@ -776,6 +879,9 @@ static unsigned int sugov_next_freq_shared(struct sugov_cpu *sg_cpu, u64 time)
 		j_util = j_sg_cpu->util;
 		j_max = j_sg_cpu->max;
 		j_util = sugov_iowait_apply(j_sg_cpu, time, j_util, j_max);
+		if (update_pmu_limit)
+			update_pmu_limit = update_pmu_throttle_on_ignored_cpus(sg_policy, j_util,
+							      policy->cpuinfo.max_freq, j_max, j);
 
 		if (j_util * max >= j_max * util) {
 			util = j_util;
@@ -844,6 +950,7 @@ static void sugov_work(struct kthread_work *work)
 	struct sugov_policy *sg_policy = container_of(work, struct sugov_policy, work);
 	unsigned int freq;
 	unsigned long flags;
+	bool relax_pmu_throttle;
 
 	/*
 	 * Hold sg_policy->update_lock shortly to handle the case where:
@@ -859,9 +966,20 @@ static void sugov_work(struct kthread_work *work)
 	freq = sg_policy->next_freq;
 	if (use_pelt())
 		sg_policy->work_in_progress = false;
+	relax_pmu_throttle = sg_policy->relax_pmu_throttle;
 	sugov_track_cycles(sg_policy, sg_policy->policy->cur,
 			   ktime_get_ns());
 	raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
+
+	if (relax_pmu_throttle) {
+		freq_qos_update_request(&sg_policy->pmu_max_freq_req,
+					sg_policy->policy->cpuinfo.max_freq);
+
+		sg_policy->under_pmu_throttle = false;
+		sg_policy->relax_pmu_throttle = false;
+
+		trace_pmu_limit(sg_policy);
+	}
 
 	mutex_lock(&sg_policy->work_lock);
 	__cpufreq_driver_target(sg_policy->policy, freq, CPUFREQ_RELATION_L);
@@ -875,6 +993,160 @@ static void sugov_irq_work(struct irq_work *irq_work)
 	sg_policy = container_of(irq_work, struct sugov_policy, irq_work);
 
 	kthread_queue_work(&sg_policy->worker, &sg_policy->work);
+}
+
+void pmu_poll_enable(void)
+{
+	// Check pmu_poll_init finish successfully
+	if (!pmu_work.work.func || !pmu_worker.task)
+		return;
+
+	// Check sg_policy for whole clusters are initialized correctly
+	if (!check_sg_policy_initialized())
+		return;
+
+	mutex_lock(&pmu_poll_enable_lock);
+
+	if (!pmu_poll_enabled) {
+		pmu_poll_enabled = true;
+		kthread_mod_delayed_work(&pmu_worker, &pmu_work, msecs_to_jiffies(0));
+	}
+
+	mutex_unlock(&pmu_poll_enable_lock);
+}
+
+void pmu_poll_disable(void)
+{
+	unsigned int cpu = 0;
+	struct cpufreq_policy *policy = NULL;
+	struct sugov_policy *sg_policy = NULL;
+
+	mutex_lock(&pmu_poll_enable_lock);
+
+	if (pmu_poll_enabled) {
+		pmu_poll_enabled = false;
+
+		kthread_cancel_delayed_work_sync(&pmu_work);
+
+		while (cpu < CPU_NR) {
+			policy = cpufreq_cpu_get(cpu);
+			sg_policy = policy->governor_data;
+
+			if (sg_policy)
+				freq_qos_update_request(&sg_policy->pmu_max_freq_req,
+							policy->cpuinfo.max_freq);
+			else
+				pr_err("no sugov policy for cpu %d\n", cpu);
+
+			cpu = cpumask_last(policy->related_cpus) + 1;
+			cpufreq_cpu_put(policy);
+		}
+	}
+
+	mutex_unlock(&pmu_poll_enable_lock);
+}
+
+static void pmu_limit_work(struct kthread_work *work)
+{
+	int ret;
+	unsigned int cpu = 0, ccpu;
+	struct sugov_policy *sg_policy = NULL;
+	struct cpufreq_policy *policy = NULL;
+	u64 lcpi = 0, spc = 0;
+	unsigned int next_max_freq;
+	unsigned long inst, cyc, stall, cachemiss, freq;
+	struct sugov_cpu *sg_cpu;
+	unsigned long flags;
+	bool pmu_throttle = false;
+	cpumask_t local_pmu_ignored_mask = CPU_MASK_NONE;
+
+	while (cpu < CPU_NR) {
+		policy = cpufreq_cpu_get(cpu);
+		sg_policy = policy->governor_data;
+		next_max_freq = policy->cpuinfo.max_freq;
+
+		// If pmu_limit_enable is not set, or policy max is lower than pum limit freq,
+		// such as under thermal throttling, we don't need to call freq_qos_update_request
+		// unless it's currently under throttle.
+		if (!sg_policy->tunables->pmu_limit_enable ||
+		    policy->max < sg_policy->tunables->limit_frequency) {
+			if (unlikely(sg_policy->under_pmu_throttle)) {
+				goto update_next_max_freq;
+			} else {
+				cpu = cpumask_last(policy->related_cpus) + 1;
+				cpufreq_cpu_put(policy);
+				continue;
+			}
+		}
+
+		raw_spin_lock_irqsave(&sg_policy->update_lock, flags);
+		sg_policy->under_pmu_throttle = false;
+		sg_policy->relax_pmu_throttle = false;
+		raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
+
+		for_each_cpu(ccpu, policy->cpus) {
+			ret = get_ev_data(ccpu, INST_EV, CYC_EV,
+					  STALL_EV, L3D_CACHE_REFILL_EV, &inst, &cyc,
+					  &stall, &cachemiss);
+
+			switch (ret){
+			case -EINVAL:
+				sg_policy->tunables->pmu_limit_enable = false;
+				pr_err("ev_data read fail\n");
+				goto update_next_max_freq;
+			case -ENODATA:
+				goto skip_ccpu;
+			};
+
+			lcpi = cachemiss * 1000 / inst;
+			spc = stall * 100 / cyc;
+
+			if (trace_clock_set_rate_enabled()) {
+				char trace_name[32] = {0};
+				scnprintf(trace_name, sizeof(trace_name), "lcpi%d", ccpu);
+				trace_clock_set_rate(trace_name, lcpi, raw_smp_processor_id());
+				scnprintf(trace_name, sizeof(trace_name), "spc%d", ccpu);
+				trace_clock_set_rate(trace_name, spc, raw_smp_processor_id());
+			}
+
+			if (!check_pmu_limit_conditions(lcpi, spc, sg_policy)) {
+				sg_cpu = &per_cpu(sugov_cpu, ccpu);
+				freq = map_util_freq(sugov_get_util(sg_cpu),
+					policy->cpuinfo.max_freq, sg_cpu->max, ccpu);
+				// Ignore this cpu if freq is <= limit freq.
+				if (freq <= sg_policy->tunables->limit_frequency) {
+					cpumask_set_cpu(ccpu, &local_pmu_ignored_mask);
+					continue;
+				} else {
+					goto update_next_max_freq;
+				}
+			}
+		}
+
+		next_max_freq = sg_policy->tunables->limit_frequency;
+		pmu_throttle = true;
+
+update_next_max_freq:
+
+		freq_qos_update_request(&sg_policy->pmu_max_freq_req, next_max_freq);
+
+		raw_spin_lock_irqsave(&sg_policy->update_lock, flags);
+		sg_policy->under_pmu_throttle = pmu_throttle;
+		cpumask_copy(&sg_policy->pmu_ignored_mask, &local_pmu_ignored_mask);
+		raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
+
+		trace_pmu_limit(sg_policy);
+		cpu = cpumask_last(policy->related_cpus) + 1;
+		cpufreq_cpu_put(policy);
+
+skip_ccpu:
+		trace_pmu_limit(sg_policy);
+		cpu = cpumask_last(policy->related_cpus) + 1;
+		cpufreq_cpu_put(policy);
+	}
+
+	kthread_mod_delayed_work(&pmu_worker, &pmu_work, msecs_to_jiffies(pmu_poll_time_ms));
+	return;
 }
 
 /************************** sysfs interface ************************/
@@ -1090,6 +1362,92 @@ static struct governor_attr hispeed_freq = __ATTR_RW(hispeed_freq);
 static struct governor_attr rtg_boost_freq = __ATTR_RW(rtg_boost_freq);
 static struct governor_attr pl = __ATTR_RW(pl);
 
+static ssize_t lcpi_threshold_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return sysfs_emit(buf, "%u\n", tunables->lcpi_threshold);
+}
+
+static ssize_t lcpi_threshold_store(struct gov_attr_set *attr_set, const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	tunables->lcpi_threshold = val;
+
+	return count;
+}
+static struct governor_attr lcpi_threshold = __ATTR_RW(lcpi_threshold);
+
+
+static ssize_t spc_threshold_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return sysfs_emit(buf, "%u\n", tunables->spc_threshold);
+}
+
+static ssize_t spc_threshold_store(struct gov_attr_set *attr_set, const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	tunables->spc_threshold = val;
+
+	return count;
+}
+static struct governor_attr spc_threshold = __ATTR_RW(spc_threshold);
+
+
+static ssize_t limit_frequency_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return sysfs_emit(buf, "%u\n", tunables->limit_frequency);
+}
+
+static ssize_t limit_frequency_store(struct gov_attr_set *attr_set, const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	unsigned int val;
+
+	if (kstrtouint(buf, 0, &val))
+		return -EINVAL;
+
+	tunables->limit_frequency = val;
+
+	return count;
+}
+static struct governor_attr limit_frequency = __ATTR_RW(limit_frequency);
+
+static ssize_t pmu_limit_enable_show(struct gov_attr_set *attr_set, char *buf)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+
+	return sysfs_emit(buf, "%s\n", tunables->pmu_limit_enable ? "true" : "false");
+}
+
+static ssize_t pmu_limit_enable_store(struct gov_attr_set *attr_set, const char *buf, size_t count)
+{
+	struct sugov_tunables *tunables = to_sugov_tunables(attr_set);
+	bool val;
+
+	if (kstrtobool(buf, &val))
+		return -EINVAL;
+
+	tunables->pmu_limit_enable = val;
+
+	return count;
+}
+static struct governor_attr pmu_limit_enable = __ATTR_RW(pmu_limit_enable);
+
 static struct attribute *sugov_attributes[] = {
 	&up_rate_limit_us.attr,
 	&down_rate_limit_us.attr,
@@ -1098,6 +1456,12 @@ static struct attribute *sugov_attributes[] = {
 	&hispeed_freq.attr,
 	&rtg_boost_freq.attr,
 	&pl.attr,
+
+	// For PMU Limit
+	&lcpi_threshold.attr,
+	&spc_threshold.attr,
+	&limit_frequency.attr,
+	&pmu_limit_enable.attr,
 	NULL
 };
 
@@ -1128,12 +1492,44 @@ static struct sugov_policy *sugov_policy_alloc(struct cpufreq_policy *policy)
 
 	sg_policy->policy = policy;
 	raw_spin_lock_init(&sg_policy->update_lock);
+	cpumask_clear(&sg_policy->pmu_ignored_mask);
+	sg_policy->under_pmu_throttle = false;
+	sg_policy->relax_pmu_throttle = false;
 	return sg_policy;
 }
 
 static void sugov_policy_free(struct sugov_policy *sg_policy)
 {
 	kfree(sg_policy);
+}
+
+static int pmu_poll_init(void)
+{
+	int ret = 0;
+	struct task_struct *thread;
+	struct sched_attr attr = {0};
+
+	attr.sched_policy = SCHED_FIFO;
+	attr.sched_priority = MAX_USER_RT_PRIO / 2;
+
+	kthread_init_delayed_work(&pmu_work, pmu_limit_work);
+	kthread_init_worker(&pmu_worker);
+	thread = kthread_create(kthread_worker_fn, &pmu_worker, "sched_pmu_wq");
+	if (IS_ERR(thread)) {
+		pr_err("failed to create pmu thread: %ld\n", PTR_ERR(thread));
+		return PTR_ERR(thread);
+	}
+
+	ret = sched_setattr_nocheck(thread, &attr);
+	if (ret) {
+		kthread_stop(thread);
+		pr_warn("%s: failed to set SCHED_FIFO\n", __func__);
+		return ret;
+	}
+
+	wake_up_process(thread);
+
+	return ret;
 }
 
 static int sugov_kthread_create(struct sugov_policy *sg_policy)
@@ -1222,6 +1618,10 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
 	cached->down_rate_limit_us = tunables->down_rate_limit_us;
+	cached->lcpi_threshold = tunables->lcpi_threshold;
+	cached->spc_threshold = tunables->spc_threshold;
+	cached->limit_frequency = tunables->limit_frequency;
+	cached->pmu_limit_enable = tunables->pmu_limit_enable;
 }
 
 static void sugov_clear_global_tunables(void)
@@ -1245,6 +1645,10 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
 	tunables->down_rate_limit_us = cached->down_rate_limit_us;
+	tunables->lcpi_threshold = cached->lcpi_threshold;
+	tunables->spc_threshold = cached->spc_threshold;
+	tunables->limit_frequency = cached->limit_frequency;
+	tunables->pmu_limit_enable = cached->pmu_limit_enable;
 }
 
 static int sugov_init(struct cpufreq_policy *policy)
@@ -1295,6 +1699,10 @@ static int sugov_init(struct cpufreq_policy *policy)
 	tunables->down_rate_limit_scale_pow = 1;
 	tunables->hispeed_load = DEFAULT_HISPEED_LOAD;
 	tunables->hispeed_freq = 0;
+	tunables->pmu_limit_enable = false;
+	tunables->lcpi_threshold = 1000;
+	tunables->spc_threshold = 100;
+	tunables->limit_frequency = policy->cpuinfo.max_freq;
 
 	switch (policy->cpu) {
 	default:
@@ -1318,6 +1726,20 @@ static int sugov_init(struct cpufreq_policy *policy)
 	stale_ns = sched_ravg_window + (sched_ravg_window >> 3);
 
 	sugov_tunables_restore(policy);
+
+
+	freq_qos_add_request(&policy->constraints, &sg_policy->pmu_max_freq_req,
+			     FREQ_QOS_MAX, policy->cpuinfo.max_freq);
+
+	ret = pmu_poll_init();
+
+	if (ret)
+		pr_err("pmu poll init failed\n");
+
+	ret = create_sysfs_node();
+
+	if (ret)
+		pr_debug("pmu poll sysfs success\n");
 
 	ret = kobject_init_and_add(&tunables->attr_set.kobj, &sugov_tunables_ktype,
 				   get_governor_parent_kobj(policy), "%s",
@@ -1356,6 +1778,10 @@ static void sugov_exit(struct cpufreq_policy *policy)
 
 	mutex_lock(&global_tunables_lock);
 
+	cpumask_andnot(&pixel_sched_governor_mask, &pixel_sched_governor_mask, policy->cpus);
+
+	pmu_poll_disable();
+	freq_qos_remove_request(&sg_policy->pmu_max_freq_req);
 	count = gov_attr_set_put(&tunables->attr_set, &sg_policy->tunables_hook);
 	policy->governor_data = NULL;
 	if (!count) {
@@ -1401,6 +1827,8 @@ static int sugov_start(struct cpufreq_policy *policy)
 			policy->cpuinfo.max_freq;
 	}
 
+	cpumask_or(&pixel_sched_governor_mask, &pixel_sched_governor_mask, policy->cpus);
+
 	for_each_cpu(cpu, policy->cpus) {
 		struct sugov_cpu *sg_cpu = &per_cpu(sugov_cpu, cpu);
 
@@ -1409,6 +1837,7 @@ static int sugov_start(struct cpufreq_policy *policy)
 							sugov_update_shared :
 							sugov_update_single);
 	}
+
 	return 0;
 }
 
@@ -1417,8 +1846,13 @@ static void sugov_stop(struct cpufreq_policy *policy)
 	struct sugov_policy *sg_policy = policy->governor_data;
 	unsigned int cpu;
 
-	for_each_cpu(cpu, policy->cpus)
+	cpumask_andnot(&pixel_sched_governor_mask, &pixel_sched_governor_mask, policy->cpus);
+
+	for_each_cpu(cpu, policy->cpus) {
 		cpufreq_remove_update_util_hook(cpu);
+	}
+
+	pmu_poll_disable();
 
 	synchronize_rcu();
 

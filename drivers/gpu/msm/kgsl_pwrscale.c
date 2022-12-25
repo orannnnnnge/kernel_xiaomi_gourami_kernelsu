@@ -412,6 +412,7 @@ int kgsl_devfreq_get_dev_status(struct device *dev,
 		last_b->ram_time = device->pwrscale.accum_stats.ram_time;
 		last_b->ram_wait = device->pwrscale.accum_stats.ram_wait;
 		last_b->mod = device->pwrctrl.bus_mod;
+		last_b->gpu_minfreq = pwrctrl->pwrlevels[pwrctrl->min_pwrlevel].gpu_freq;
 	}
 
 	kgsl_pwrctrl_busy_time(device, stat->total_time, stat->busy_time);
@@ -518,6 +519,7 @@ int kgsl_busmon_get_dev_status(struct device *dev,
 		b->ram_time = last_b->ram_time;
 		b->ram_wait = last_b->ram_wait;
 		b->mod = last_b->mod;
+		b->gpu_minfreq = last_b->gpu_minfreq;
 	}
 	return 0;
 }
@@ -608,6 +610,7 @@ int kgsl_busmon_target(struct device *dev, unsigned long *freq, u32 flags)
 	/* Update bus vote if AB or IB is modified */
 	if ((pwr->bus_mod != b) || (pwr->bus_ab_mbytes != ab_mbytes)) {
 		pwr->bus_percent_ab = device->pwrscale.bus_profile.percent_ab;
+		pwr->ddr_stall_percent = device->pwrscale.bus_profile.wait_active_percent;
 		pwr->bus_ab_mbytes = ab_mbytes;
 		kgsl_pwrctrl_buslevel_update(device, true);
 	}

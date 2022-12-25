@@ -22,8 +22,6 @@
  * @pool_order: Page order describing the size of the page
  * @page_count: Number of pages currently present in the pool
  * @reserved_pages: Number of pages reserved at init for the pool
- * @allocation_allowed: Tells if reserved pool gets exhausted, can we allocate
- * from system memory
  * @max_pages: Limit on number of pages this pool can hold
  * @list_lock: Spinlock for page list in the pool
  * @page_list: List of pages held/reserved in this pool
@@ -32,7 +30,6 @@ struct kgsl_page_pool {
 	unsigned int pool_order;
 	int page_count;
 	unsigned int reserved_pages;
-	bool allocation_allowed;
 	unsigned int max_pages;
 	spinlock_t list_lock;
 	struct list_head page_list;
@@ -135,19 +132,27 @@ static void _kgsl_free_pages(struct page *page, int order)
 }
 
 /*
- * This will shrink the specified pool by num_pages or its pool_size,
- * whichever is smaller.
+ * This will shrink the specified pool by num_pages or by
+ * (page_count - reserved_pages), whichever is smaller.
  */
 static unsigned int
-_kgsl_pool_shrink(struct kgsl_page_pool *pool, int num_pages)
+_kgsl_pool_shrink(struct kgsl_page_pool *pool,
+			unsigned int num_pages, bool exit)
 {
 	int j;
 	unsigned int pcount = 0;
 
-	if (pool == NULL || num_pages <= 0)
+	if (pool == NULL || num_pages == 0)
 		return pcount;
 
-	for (j = 0; j < num_pages >> pool->pool_order; j++) {
+	num_pages = num_pages >> pool->pool_order;
+
+	/* This is to ensure that we don't free reserved pages */
+	if (!exit)
+		num_pages =  min(num_pages, (pool->page_count -
+				pool->reserved_pages));
+
+	for (j = 0; j < num_pages; j++) {
 		struct page *page = _kgsl_pool_get_page(pool);
 
 		if (page != NULL) {
@@ -163,45 +168,25 @@ _kgsl_pool_shrink(struct kgsl_page_pool *pool, int num_pages)
 }
 
 /*
- * This function reduces the total pool size
- * to number of pages specified by target_pages.
+ * This function removes number of pages specified by
+ * target_pages from the total pool size.
  *
- * If target_pages are greater than current pool size
- * nothing needs to be done otherwise remove
- * (current_pool_size - target_pages) pages from pool
- * starting from higher order pool.
+ * Remove target_pages from the pool, starting from higher order pool.
  */
 static unsigned long
-kgsl_pool_reduce(unsigned int target_pages, bool exit)
+kgsl_pool_reduce(int target_pages, bool exit)
 {
-	int total_pages = 0;
-	int i;
-	int nr_removed;
-	struct kgsl_page_pool *pool;
+	int i, ret;
 	unsigned long pcount = 0;
 
-	total_pages = kgsl_pool_size_total();
-
 	for (i = (kgsl_num_pools - 1); i >= 0; i--) {
-		pool = &kgsl_pools[i];
-
-		/*
-		 * Only reduce the pool sizes for pools which are allowed to
-		 * allocate memory unless we are at close, in which case the
-		 * reserved memory for all pools needs to be freed
-		 */
-		if (!pool->allocation_allowed && !exit)
-			continue;
-
-		nr_removed = total_pages - target_pages - pcount;
-		if (nr_removed <= 0)
+		if (target_pages <= 0)
 			return pcount;
 
-		/* Round up to integral number of pages in this pool */
-		nr_removed = ALIGN(nr_removed, 1 << pool->pool_order);
-
-		/* Remove nr_removed pages from this pool*/
-		pcount += _kgsl_pool_shrink(pool, nr_removed);
+		/* Remove target_pages pages from this pool */
+		ret = _kgsl_pool_shrink(&kgsl_pools[i], target_pages, exit);
+		target_pages -= ret;
+		pcount += ret;
 	}
 
 	return pcount;
@@ -325,13 +310,6 @@ int kgsl_pool_alloc_page(int *page_size, struct page **pages,
 
 	/* Allocate a new page if not allocated from pool */
 	if (page == NULL) {
-		/* Only allocate non-reserved memory for certain pools */
-		if (!pool->allocation_allowed && pool_idx > 0) {
-			size = PAGE_SIZE <<
-					kgsl_pools[pool_idx-1].pool_order;
-			goto eagain;
-		}
-
 		page = _kgsl_alloc_pages(order);
 		if (!page) {
 			if (pool_idx > 0) {
@@ -432,15 +410,8 @@ static unsigned long
 kgsl_pool_shrink_scan_objects(struct shrinker *shrinker,
 					struct shrink_control *sc)
 {
-	/* nr represents number of pages to be removed*/
-	int nr = sc->nr_to_scan;
-	int total_pages = kgsl_pool_size_total();
-
-	/* Target pages represents new  pool size */
-	int target_pages = (nr > total_pages) ? 0 : (total_pages - nr);
-
-	/* Reduce pool size to target_pages */
-	return kgsl_pool_reduce(target_pages, false);
+	/* sc->nr_to_scan represents number of pages to be removed*/
+	return kgsl_pool_reduce(sc->nr_to_scan, false);
 }
 
 static unsigned long
@@ -463,7 +434,7 @@ static struct shrinker kgsl_pool_shrinker = {
 };
 
 static void kgsl_pool_config(unsigned int order, unsigned int reserved_pages,
-		bool allocation_allowed, unsigned int max_pages)
+		unsigned int max_pages)
 {
 #ifdef CONFIG_ALLOC_BUFFERS_IN_4K_CHUNKS
 	if (order > 0) {
@@ -477,7 +448,6 @@ static void kgsl_pool_config(unsigned int order, unsigned int reserved_pages,
 
 	kgsl_pools[kgsl_num_pools].pool_order = order;
 	kgsl_pools[kgsl_num_pools].reserved_pages = reserved_pages;
-	kgsl_pools[kgsl_num_pools].allocation_allowed = allocation_allowed;
 	kgsl_pools[kgsl_num_pools].max_pages = max_pages;
 	spin_lock_init(&kgsl_pools[kgsl_num_pools].list_lock);
 	INIT_LIST_HEAD(&kgsl_pools[kgsl_num_pools].page_list);
@@ -488,7 +458,6 @@ static void kgsl_of_parse_mempools(struct device_node *node)
 {
 	struct device_node *child;
 	unsigned int page_size, reserved_pages = 0, max_pages = UINT_MAX;
-	bool allocation_allowed;
 
 	for_each_child_of_node(node, child) {
 		unsigned int index;
@@ -506,14 +475,11 @@ static void kgsl_of_parse_mempools(struct device_node *node)
 		of_property_read_u32(child, "qcom,mempool-reserved",
 				&reserved_pages);
 
-		allocation_allowed = of_property_read_bool(child,
-				"qcom,mempool-allocate");
-
 		of_property_read_u32(child, "qcom,mempool-max-pages",
 				&max_pages);
 
 		kgsl_pool_config(ilog2(page_size >> PAGE_SHIFT), reserved_pages,
-				allocation_allowed, max_pages);
+				max_pages);
 	}
 }
 
@@ -559,9 +525,8 @@ void kgsl_init_page_pools(struct platform_device *pdev)
 void kgsl_exit_page_pools(void)
 {
 	/* Release all pages in pools, if any.*/
-	kgsl_pool_reduce(0, true);
+	kgsl_pool_reduce(INT_MAX, true);
 
 	/* Unregister shrinker */
 	unregister_shrinker(&kgsl_pool_shrinker);
 }
-

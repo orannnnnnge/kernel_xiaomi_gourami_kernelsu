@@ -16,18 +16,31 @@
  * @power:	The power consumed by 1 CPU at this level, in milli-watts
  * @cost:	The cost coefficient associated with this level, used during
  *		energy calculation. Equal to: power * max_frequency / frequency
+ * @flags:	see "em_cap_state flags" description below.
  */
 struct em_cap_state {
 	unsigned long frequency;
 	unsigned long power;
 	unsigned long cost;
+	unsigned long flags;
 };
+
+/*
+ * em_perf_domain flags:
+ *
+ * EM_PERF_STATE_INEFFICIENT: The performance state is inefficient. There is
+ * in this em_perf_domain, another performance state with a higher frequency
+ * but a lower or equal power cost. Such inefficient states are ignored when
+ * using em_pd_get_efficient_*() functions.
+ */
+#define EM_PERF_STATE_INEFFICIENT BIT(0)
 
 /**
  * em_perf_domain - Performance domain
  * @table:		List of capacity states, in ascending order
  * @nr_cap_states:	Number of capacity states
  * @cpus:		Cpumask covering the CPUs of the domain
+ * @flags:		See "em_perf_domain flags"
  *
  * A "performance domain" represents a group of CPUs whose performance is
  * scaled together. All CPUs of a performance domain must have the same
@@ -38,9 +51,34 @@ struct em_perf_domain {
 	struct em_cap_state *table;
 	int nr_cap_states;
 	unsigned long cpus[0];
+	unsigned long flags;
 };
 
+/*
+ *  em_perf_domain flags:
+ *
+ *  EM_PERF_DOMAIN_SKIP_INEFFICIENCIES: Skip inefficient states when estimating
+ *  energy consumption.
+ */
+#define EM_PERF_DOMAIN_SKIP_INEFFICIENCIES BIT(0)
+
 #define EM_CPU_MAX_POWER 0xFFFF
+
+/*
+ * Increase resolution of energy estimation calculations for 64-bit
+ * architectures. The extra resolution improves decision made by EAS for the
+ * task placement when two Performance Domains might provide similar energy
+ * estimation values (w/o better resolution the values could be equal).
+ *
+ * We increase resolution only if we have enough bits to allow this increased
+ * resolution (i.e. 64-bit). The costs for increasing resolution when 32-bit
+ * are pretty high and the returns do not justify the increased costs.
+ */
+#ifdef CONFIG_64BIT
+#define em_scale_power(p) ((p) * 1000)
+#else
+#define em_scale_power(p) (p)
+#endif
 
 struct em_data_callback {
 	/**
@@ -67,6 +105,38 @@ struct em_perf_domain *em_cpu_get(int cpu);
 int em_register_perf_domain(cpumask_t *span, unsigned int nr_states,
 						struct em_data_callback *cb);
 
+
+/**
+ * em_pd_get_efficient_state() - Get an efficient performance state from the EM
+ * @pd   : Performance domain for which we want an efficient frequency
+ * @freq : Frequency to map with the EM
+ *
+ * It is called from the scheduler code quite frequently and as a consequence
+ * doesn't implement any check.
+ *
+ * Return: An efficient performance state, high enough to meet @freq
+ * requirement.
+ */
+static inline
+struct em_cap_state *em_pd_get_efficient_state(struct em_perf_domain *pd,
+						unsigned long freq)
+{
+	struct em_cap_state *cs;
+	int i;
+
+	for (i = 0; i < pd->nr_cap_states; i++) {
+		cs = &pd->table[i];
+		if (cs->frequency >= freq) {
+			if (pd->flags & EM_PERF_DOMAIN_SKIP_INEFFICIENCIES &&
+			    cs->flags & EM_PERF_STATE_INEFFICIENT)
+				continue;
+			break;
+		}
+	}
+
+	return cs;
+}
+
 /**
  * em_pd_energy() - Estimates the energy consumed by the CPUs of a perf. domain
  * @pd		: performance domain for which energy has to be estimated
@@ -81,7 +151,7 @@ static inline unsigned long em_pd_energy(struct em_perf_domain *pd,
 {
 	unsigned long freq, scale_cpu;
 	struct em_cap_state *cs;
-	int i, cpu;
+	int cpu;
 
 	if (!sum_util)
 		return 0;
@@ -94,17 +164,13 @@ static inline unsigned long em_pd_energy(struct em_perf_domain *pd,
 	cpu = cpumask_first(to_cpumask(pd->cpus));
 	scale_cpu = arch_scale_cpu_capacity(NULL, cpu);
 	cs = &pd->table[pd->nr_cap_states - 1];
-	freq = map_util_freq(max_util, cs->frequency, scale_cpu);
+	freq = map_util_freq(max_util, cs->frequency, scale_cpu, cpu);
 
 	/*
 	 * Find the lowest capacity state of the Energy Model above the
 	 * requested frequency.
 	 */
-	for (i = 0; i < pd->nr_cap_states; i++) {
-		cs = &pd->table[i];
-		if (cs->frequency >= freq)
-			break;
-	}
+	cs = em_pd_get_efficient_state(pd, freq);
 
 	/*
 	 * The capacity of a CPU in the domain at that capacity state (cs)

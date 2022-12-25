@@ -275,6 +275,7 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 {
 	struct kgsl_pwrctrl *pwr = &device->pwrctrl;
 	int cur = pwr->pwrlevels[pwr->active_pwrlevel].bus_freq;
+	int cur_max = pwr->pwrlevels[pwr->active_pwrlevel].bus_max;
 	int buslevel = 0;
 	unsigned long ab;
 
@@ -289,11 +290,20 @@ void kgsl_pwrctrl_buslevel_update(struct kgsl_device *device,
 		buslevel = min_t(int, pwr->pwrlevels[0].bus_max,
 				cur + pwr->bus_mod);
 		buslevel = max_t(int, buslevel, 1);
+
+		/*
+		 * larger % of stalls we consider increasing the bus vote by
+		 * more than 1 level.
+		 */
+		if ((pwr->active_pwrlevel == pwr->min_pwrlevel) &&
+				pwr->ddr_stall_percent >= 95)
+			buslevel = min_t(int, buslevel + 1, cur_max);
 	} else {
 		/* If the bus is being turned off, reset to default level */
 		pwr->bus_mod = 0;
 		pwr->bus_percent_ab = 0;
 		pwr->bus_ab_mbytes = 0;
+		pwr->ddr_stall_percent = 0;
 	}
 	trace_kgsl_buslevel(device, pwr->active_pwrlevel, buslevel);
 	last_vote_buslevel = buslevel;
@@ -635,6 +645,7 @@ void kgsl_pwrctrl_pwrlevel_change(struct kgsl_device *device,
 	if (pwr->bus_mod < 0 || new_level < old_level) {
 		pwr->bus_mod = 0;
 		pwr->bus_percent_ab = 0;
+		pwr->ddr_stall_percent = 0;
 	}
 	/*
 	 * Update the bus before the GPU clock to prevent underrun during

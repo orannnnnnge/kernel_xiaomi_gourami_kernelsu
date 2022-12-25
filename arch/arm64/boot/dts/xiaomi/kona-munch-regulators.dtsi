@@ -26,7 +26,9 @@
 &L13A {
 	regulator-min-microvolt = <3000000>;
 	regulator-max-microvolt = <3000000>;
+	qcom,init-mode = <RPMH_REGULATOR_MODE_HPM>;
 	qcom,init-voltage = <3000000>;
+	regulator-always-on;
 };
 
 &L5C {
