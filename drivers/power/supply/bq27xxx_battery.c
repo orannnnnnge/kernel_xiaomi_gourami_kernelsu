@@ -1875,7 +1875,7 @@ static int bq27xxx_battery_current_and_status(
 	}
 
 	if (val_curr)
-		val_curr->intval = curr;
+		val_curr->intval = -curr;
 
 	if (val_status) {
 		if (curr > 0) {

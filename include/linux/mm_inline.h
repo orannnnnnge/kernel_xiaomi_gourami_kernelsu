@@ -31,7 +31,7 @@ static __always_inline void __update_lru_size(struct lruvec *lruvec,
 
 	lockdep_assert_held(&pgdat->lru_lock);
 
-	__mod_node_page_state(pgdat, NR_LRU_BASE + lru, nr_pages);
+	__mod_lruvec_state(lruvec, NR_LRU_BASE + lru, nr_pages);
 	__mod_zone_page_state(&pgdat->node_zones[zid],
 				NR_ZONE_LRU_BASE + lru, nr_pages);
 }

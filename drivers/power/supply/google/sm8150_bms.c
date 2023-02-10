@@ -826,7 +826,11 @@ static int sm8150_get_batt_health(struct bms_dev *bms)
 			if (bms->fv_votable) {
 				effective_fv_uv = get_effective_result(
 							bms->fv_votable);
+				#if IS_ENABLED(CONFIG_QPNP_FG_GEN4)
+				if (vchrg >= effective_fv_uv + 100000) {
+				#else
 				if (vchrg >= effective_fv_uv + 40000) {
+				#endif
 					ret = POWER_SUPPLY_HEALTH_OVERVOLTAGE;
 					pr_err("battery over-voltage vbat_fg = %duV, fv = %duV\n",
 							vchrg, effective_fv_uv);

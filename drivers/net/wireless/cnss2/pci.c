@@ -72,11 +72,12 @@ static DEFINE_SPINLOCK(time_sync_lock);
 #define LINK_TRAINING_RETRY_MAX_TIMES		3
 #define LINK_TRAINING_RETRY_DELAY_MS		500
 
+#define MHI_SUSPEND_RETRY_MAX_TIMES		3
+#define MHI_SUSPEND_RETRY_DELAY_US		5000
+
 #define HANG_DATA_LENGTH		384
 #define HST_HANG_DATA_OFFSET		((3 * 1024 * 1024) - HANG_DATA_LENGTH)
 #define HSP_HANG_DATA_OFFSET		((2 * 1024 * 1024) - HANG_DATA_LENGTH)
-
-#define MHI_SUSPEND_RETRY_CNT		3
 
 static struct cnss_pci_reg ce_src[] = {
 	{ "SRC_RING_BASE_LSB", QCA6390_CE_SRC_RING_BASE_LSB_OFFSET },
@@ -626,6 +627,63 @@ static int cnss_set_pci_config_space(struct cnss_pci_data *pci_priv, bool save)
 	return 0;
 }
 
+/**
+ * cnss_pci_set_link_up() - Power on or resume PCIe link
+ * @pci_priv: driver PCI bus context pointer
+ *
+ * This function shall call corresponding PCIe root complex driver APIs
+ * to Power on or resume PCIe link.
+ *
+ * Return: 0 for success, negative value for error
+ */
+static int cnss_pci_set_link_up(struct cnss_pci_data *pci_priv)
+{
+	struct pci_dev *pci_dev = pci_priv->pci_dev;
+	enum msm_pcie_pm_opt pm_ops = MSM_PCIE_RESUME;
+	u32 pm_options = PM_OPTIONS_DEFAULT;
+	int ret;
+
+	ret = msm_pcie_pm_control(pm_ops, pci_dev->bus->number, pci_dev,
+				  NULL, pm_options);
+	if (ret)
+		cnss_pr_err("Failed to resume PCI link with default option, err = %d\n",
+			    ret);
+
+	return ret;
+}
+
+/**
+ * cnss_pci_set_link_down() - Power off or suspend PCIe link
+ * @pci_priv: driver PCI bus context pointer
+ *
+ * This function shall call corresponding PCIe root complex driver APIs
+ * to power off or suspend PCIe link.
+ *
+ * Return: 0 for success, negative value for error
+ */
+static int cnss_pci_set_link_down(struct cnss_pci_data *pci_priv)
+{
+	struct pci_dev *pci_dev = pci_priv->pci_dev;
+	enum msm_pcie_pm_opt pm_ops;
+	u32 pm_options = PM_OPTIONS_DEFAULT;
+	int ret;
+
+	if (pci_priv->drv_connected_last) {
+		cnss_pr_vdbg("Use PCIe DRV suspend\n");
+		pm_ops = MSM_PCIE_DRV_SUSPEND;
+	} else {
+		pm_ops = MSM_PCIE_SUSPEND;
+	}
+
+	ret = msm_pcie_pm_control(pm_ops, pci_dev->bus->number, pci_dev,
+				  NULL, pm_options);
+	if (ret)
+		cnss_pr_err("Failed to suspend PCI link with default option, err = %d\n",
+			    ret);
+
+	return ret;
+}
+
 static int cnss_pci_get_link_status(struct cnss_pci_data *pci_priv)
 {
 	u16 link_status;
@@ -651,23 +709,27 @@ static int cnss_pci_get_link_status(struct cnss_pci_data *pci_priv)
 static int cnss_set_pci_link_status(struct cnss_pci_data *pci_priv,
 				    enum pci_link_status status)
 {
-	u16 link_speed, link_width;
+	u16 link_speed, link_width = pci_priv->def_link_width;
+	u16 one_lane = PCI_EXP_LNKSTA_NLW_X1 >> PCI_EXP_LNKSTA_NLW_SHIFT;
+	int ret;
 
 	cnss_pr_vdbg("Set PCI link status to: %u\n", status);
 
 	switch (status) {
 	case PCI_GEN1:
 		link_speed = PCI_EXP_LNKSTA_CLS_2_5GB;
-		link_width = PCI_EXP_LNKSTA_NLW_X1 >> PCI_EXP_LNKSTA_NLW_SHIFT;
+		if (!link_width)
+			link_width = one_lane;
 		break;
 	case PCI_GEN2:
 		link_speed = PCI_EXP_LNKSTA_CLS_5_0GB;
-		link_width = PCI_EXP_LNKSTA_NLW_X1 >> PCI_EXP_LNKSTA_NLW_SHIFT;
+		if (!link_width)
+			link_width = one_lane;
+
 		break;
 	case PCI_DEF:
 		link_speed = pci_priv->def_link_speed;
-		link_width = pci_priv->def_link_width;
-		if (!link_speed && !link_width) {
+		if (!link_speed || !link_width) {
 			cnss_pr_err("PCI link speed or width is not valid\n");
 			return -EINVAL;
 		}
@@ -677,47 +739,38 @@ static int cnss_set_pci_link_status(struct cnss_pci_data *pci_priv,
 		return -EINVAL;
 	}
 
-	return msm_pcie_set_link_bandwidth(pci_priv->pci_dev,
+	ret = msm_pcie_set_link_bandwidth(pci_priv->pci_dev,
 					   link_speed, link_width);
+	if (!ret)
+		pci_priv->cur_link_speed = link_speed;
+
+	return ret;
 }
 
-static int cnss_set_pci_link(struct cnss_pci_data *pci_priv, bool link_up)
+int cnss_set_pci_link(struct cnss_pci_data *pci_priv, bool link_up)
 {
-	int ret = 0;
-	struct pci_dev *pci_dev = pci_priv->pci_dev;
-	enum msm_pcie_pm_opt pm_ops;
-	int retry = 0;
-	u32 pm_options = PM_OPTIONS_DEFAULT;
+	int ret = 0, retry = 0;
 
 	cnss_pr_vdbg("%s PCI link\n", link_up ? "Resuming" : "Suspending");
 
 	if (link_up) {
-		pm_ops = MSM_PCIE_RESUME;
-	} else {
-		if (pci_priv->drv_connected_last) {
-			cnss_pr_vdbg("Use PCIe DRV suspend\n");
-			pm_ops = MSM_PCIE_DRV_SUSPEND;
-			if (pci_priv->device_id != QCA6390_DEVICE_ID) {
-				pm_options |= MSM_PCIE_CONFIG_NO_DRV_PC;
-				cnss_set_pci_link_status(pci_priv, PCI_GEN1);
-			}
-		} else {
-			pm_ops = MSM_PCIE_SUSPEND;
-		}
-	}
-
 retry:
-	ret = msm_pcie_pm_control(pm_ops, pci_dev->bus->number, pci_dev,
-				  NULL, pm_options);
-	if (ret) {
-		cnss_pr_err("Failed to %s PCI link with default option, err = %d\n",
-			    link_up ? "resume" : "suspend", ret);
-		if (link_up && retry++ < LINK_TRAINING_RETRY_MAX_TIMES) {
+		ret = cnss_pci_set_link_up(pci_priv);
+		if (ret && retry++ < LINK_TRAINING_RETRY_MAX_TIMES) {
 			cnss_pr_dbg("Retry PCI link training #%d\n", retry);
 			if (pci_priv->pci_link_down_ind)
 				msleep(LINK_TRAINING_RETRY_DELAY_MS * retry);
 			goto retry;
 		}
+	} else {
+		/* Since DRV suspend cannot be done in Gen 3, set it to
+		 * Gen 2 if current link speed is larger than Gen 2.
+		 */
+		if (pci_priv->drv_connected_last &&
+		    pci_priv->cur_link_speed > PCI_EXP_LNKSTA_CLS_5_0GB)
+			cnss_set_pci_link_status(pci_priv, PCI_GEN2);
+
+		ret = cnss_pci_set_link_down(pci_priv);
 	}
 
 	if (pci_priv->drv_connected_last) {
@@ -1192,8 +1245,7 @@ static void cnss_pci_set_mhi_state_bit(struct cnss_pci_data *pci_priv,
 static int cnss_pci_set_mhi_state(struct cnss_pci_data *pci_priv,
 				  enum cnss_mhi_state mhi_state)
 {
-	int ret = 0;
-	u8 retry = 0;
+	int ret = 0, retry = 0;
 
 	if (pci_priv->device_id == QCA6174_DEVICE_ID)
 		return 0;
@@ -1240,28 +1292,28 @@ static int cnss_pci_set_mhi_state(struct cnss_pci_data *pci_priv,
 		ret = 0;
 		break;
 	case CNSS_MHI_SUSPEND:
+retry_mhi_suspend:
 		mutex_lock(&pci_priv->mhi_ctrl->pm_mutex);
-		if (pci_priv->drv_connected_last) {
+		if (pci_priv->drv_connected_last)
 			ret = mhi_pm_fast_suspend(pci_priv->mhi_ctrl, true);
-		} else {
+		else
 			ret = mhi_pm_suspend(pci_priv->mhi_ctrl);
-			/* in some corner case, when cnss try to suspend,
-			 * there is still packets pending in mhi layer,
-			 * so retry suspend to save roll back effort.
-			 */
-			while (ret == -EBUSY && retry < MHI_SUSPEND_RETRY_CNT) {
-				usleep_range(5000, 6000);
-				retry++;
-				cnss_pr_err("mhi is busy, retry #%u", retry);
-				ret = mhi_pm_suspend(pci_priv->mhi_ctrl);
-			}
-		}
 		mutex_unlock(&pci_priv->mhi_ctrl->pm_mutex);
+		if (ret == -EBUSY && retry++ < MHI_SUSPEND_RETRY_MAX_TIMES) {
+			cnss_pr_dbg("Retry MHI suspend #%d\n", retry);
+			usleep_range(MHI_SUSPEND_RETRY_DELAY_US,
+				     MHI_SUSPEND_RETRY_DELAY_US + 1000);
+			goto retry_mhi_suspend;
+		}
 		break;
 	case CNSS_MHI_RESUME:
 		mutex_lock(&pci_priv->mhi_ctrl->pm_mutex);
 		if (pci_priv->drv_connected_last) {
-			cnss_pci_prevent_l1(&pci_priv->pci_dev->dev);
+			ret = cnss_pci_prevent_l1(&pci_priv->pci_dev->dev);
+			if (ret) {
+				mutex_unlock(&pci_priv->mhi_ctrl->pm_mutex);
+				break;
+			}
 			ret = mhi_pm_fast_resume(pci_priv->mhi_ctrl, true);
 			cnss_pci_allow_l1(&pci_priv->pci_dev->dev);
 		} else {
@@ -1287,7 +1339,7 @@ static int cnss_pci_set_mhi_state(struct cnss_pci_data *pci_priv,
 	return 0;
 
 out:
-	cnss_pr_err("Failed to set MHI state: %s(%d) ret: %d\n",
+	cnss_pr_err("Failed to set MHI state: %s(%d), err = %d\n",
 		    cnss_mhi_state_to_str(mhi_state), mhi_state, ret);
 
 	if (mhi_state == CNSS_MHI_RESUME && ret != -ETIMEDOUT)
@@ -2555,6 +2607,7 @@ static bool cnss_pci_is_drv_supported(struct cnss_pci_data *pci_priv)
 
 	if (!root_port) {
 		cnss_pr_err("PCIe DRV is not supported as root port is null\n");
+		pci_priv->drv_supported = false;
 		return drv_supported;
 	}
 
@@ -2566,6 +2619,7 @@ static bool cnss_pci_is_drv_supported(struct cnss_pci_data *pci_priv)
 
 	cnss_pr_dbg("PCIe DRV is %s\n",
 		    drv_supported ? "supported" : "not supported");
+	pci_priv->drv_supported = drv_supported;
 
 	if (drv_supported)
 		plat_priv->cap.cap_flag |= CNSS_HAS_DRV_SUPPORT;
@@ -2804,7 +2858,8 @@ static int cnss_pci_suspend(struct device *dev)
 	if (!cnss_is_device_powered_on(plat_priv))
 		goto out;
 
-	if (!test_bit(DISABLE_DRV, &plat_priv->ctrl_params.quirks)) {
+	if (!test_bit(DISABLE_DRV, &plat_priv->ctrl_params.quirks) &&
+	    pci_priv->drv_supported) {
 		pci_priv->drv_connected_last =
 			cnss_pci_get_drv_connected(pci_priv);
 		if (!pci_priv->drv_connected_last) {
@@ -2944,7 +2999,8 @@ static int cnss_pci_runtime_suspend(struct device *dev)
 		return -EAGAIN;
 	}
 
-	if (!test_bit(DISABLE_DRV, &plat_priv->ctrl_params.quirks)) {
+	if (!test_bit(DISABLE_DRV, &plat_priv->ctrl_params.quirks) &&
+	    pci_priv->drv_supported) {
 		pci_priv->drv_connected_last =
 			cnss_pci_get_drv_connected(pci_priv);
 		if (!pci_priv->drv_connected_last) {
@@ -3445,14 +3501,26 @@ int cnss_pci_alloc_fw_mem(struct cnss_pci_data *pci_priv)
 
 	for (i = 0; i < plat_priv->fw_mem_seg_len; i++) {
 		if (!fw_mem[i].va && fw_mem[i].size) {
+retry:
 			fw_mem[i].va =
 				dma_alloc_attrs(dev, fw_mem[i].size,
 						&fw_mem[i].pa, GFP_KERNEL,
 						fw_mem[i].attrs);
 
 			if (!fw_mem[i].va) {
+				if ((fw_mem[i].attrs &
+				    DMA_ATTR_FORCE_CONTIGUOUS)) {
+					fw_mem[i].attrs &=
+					    ~DMA_ATTR_FORCE_CONTIGUOUS;
+
+					cnss_pr_dbg("Fallback to non-contiguous memory for FW, Mem type: %u\n",
+						    fw_mem[i].type);
+					goto retry;
+				}
+
 				cnss_pr_err("Failed to allocate memory for FW, size: 0x%zx, type: %u\n",
 					    fw_mem[i].size, fw_mem[i].type);
+				CNSS_ASSERT(0);
 				BUG();
 			}
 		}
@@ -4466,17 +4534,21 @@ void cnss_pci_collect_dump_info(struct cnss_pci_data *pci_priv, bool in_panic)
 
 	mhi_dump_sfr(pci_priv->mhi_ctrl);
 
-	cnss_pr_dbg("Collect remote heap dump segment\n");
-
 	for (i = 0, j = 0; i < plat_priv->fw_mem_seg_len; i++) {
 		if (fw_mem[i].type == CNSS_MEM_TYPE_DDR) {
-			cnss_pci_add_dump_seg(pci_priv, dump_seg,
-					      CNSS_FW_REMOTE_HEAP, j,
-					      fw_mem[i].va, fw_mem[i].pa,
-					      fw_mem[i].size);
-			dump_seg++;
-			dump_data->nentries++;
-			j++;
+			if (fw_mem[i].attrs & DMA_ATTR_FORCE_CONTIGUOUS) {
+				cnss_pr_dbg("Collect remote heap dump segment\n");
+				cnss_pci_add_dump_seg(pci_priv, dump_seg,
+						      CNSS_FW_REMOTE_HEAP, j,
+						      fw_mem[i].va,
+						      fw_mem[i].pa,
+						      fw_mem[i].size);
+				dump_seg++;
+				dump_data->nentries++;
+				j++;
+			} else {
+				cnss_pr_dbg("Skip remote heap dumps as it is non-contiguous\n");
+			}
 		}
 	}
 
@@ -4516,7 +4588,8 @@ void cnss_pci_clear_dump_info(struct cnss_pci_data *pci_priv)
 	}
 
 	for (i = 0, j = 0; i < plat_priv->fw_mem_seg_len; i++) {
-		if (fw_mem[i].type == CNSS_MEM_TYPE_DDR) {
+		if (fw_mem[i].type == CNSS_MEM_TYPE_DDR &&
+		    (fw_mem[i].attrs & DMA_ATTR_FORCE_CONTIGUOUS)) {
 			cnss_pci_remove_dump_seg(pci_priv, dump_seg,
 						 CNSS_FW_REMOTE_HEAP, j,
 						 fw_mem[i].va, fw_mem[i].pa,

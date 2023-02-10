@@ -58,7 +58,7 @@
 
 
 /* AACR default slope is disabled by default */
-#define AACR_START_CYCLE_DEFAULT	100
+#define AACR_START_CYCLE_DEFAULT	400
 #define AACR_MAX_CYCLE_DEFAULT		0 /* disabled */
 
 /* qual time is 0 minutes of charge or 0% increase in SOC */
@@ -175,6 +175,8 @@ struct batt_ssoc_state {
 	int bd_trickle_recharge_soc;
 	int bd_trickle_cnt;
 	bool bd_trickle_dry_run;
+	bool bd_trickle_full;
+	bool bd_trickle_eoc;
 	u32 bd_trickle_reset_sec;
 
 	/* buff */
@@ -401,6 +403,9 @@ struct batt_drv {
 	u32 aacr_algo;
 
 	struct swelling_data sd;
+
+	/* battery critical level */
+	int batt_critical_voltage;
 };
 
 static int batt_chg_tier_stats_cstr(char *buff, int size,
@@ -881,15 +886,6 @@ static bool batt_rl_enter(struct batt_ssoc_state *ssoc_state,
 	if (rl_current == rl_status || rl_current == BATT_RL_STATUS_DISCHARGE)
 		return false;
 
-	/* bd_trickle_cnt -1 if the rl_status change does not happen at 100% */
-	if (rl_current == BATT_RL_STATUS_RECHARGE &&
-	    rl_status == BATT_RL_STATUS_DISCHARGE) {
-		if (ssoc_get_real(ssoc_state) != SSOC_FULL) {
-			if (ssoc_state->bd_trickle_cnt > 0)
-				ssoc_state->bd_trickle_cnt--;
-		}
-	}
-
 	/* NOTE: rl_status transition from *->DISCHARGE on charger FULL (during
 	 * charge or at the end of recharge) and transition from
 	 * NONE->RECHARGE when battery is full (SOC==100%) before charger is.
@@ -1074,7 +1070,11 @@ static void batt_rl_update_status(struct batt_drv *batt_drv)
 	if (batt_drv->psy)
 		power_supply_changed(batt_drv->psy);
 
-	ssoc_state->bd_trickle_cnt++;
+	if (ssoc_state->bd_trickle_full && ssoc_state->bd_trickle_eoc) {
+		ssoc_state->bd_trickle_cnt++;
+		ssoc_state->bd_trickle_full = false;
+		ssoc_state->bd_trickle_eoc = false;
+	}
 }
 
 /* ------------------------------------------------------------------------- */
@@ -2062,6 +2062,8 @@ static inline void batt_reset_chg_drv_state(struct batt_drv *batt_drv)
 	batt_drv->ttf_debounce = 1;
 	batt_drv->fg_status = POWER_SUPPLY_STATUS_UNKNOWN;
 	batt_drv->chg_done = false;
+	batt_drv->ssoc_state.bd_trickle_full = false;
+	batt_drv->ssoc_state.bd_trickle_eoc = false;
 	/* algo */
 	batt_drv->temp_idx = -1;
 	batt_drv->vbatt_idx = -1;
@@ -2978,6 +2980,8 @@ static void bd_trickle_reset(struct batt_ssoc_state *ssoc_state,
 {
 	ssoc_state->bd_trickle_cnt = 0;
 	ssoc_state->disconnect_time = 0;
+	ssoc_state->bd_trickle_full = false;
+	ssoc_state->bd_trickle_eoc = false;
 
 	/* Set to false in cev_stats_init */
 	ce_data->bd_clear_trickle = true;
@@ -3111,9 +3115,11 @@ static int batt_chg_logic(struct batt_drv *batt_drv)
 		changed = batt_rl_enter(&batt_drv->ssoc_state,
 					BATT_RL_STATUS_DISCHARGE);
 		batt_drv->chg_done = true;
+		batt_drv->ssoc_state.bd_trickle_eoc = true;
 	} else if (batt_drv->batt_full) {
 		changed = batt_rl_enter(&batt_drv->ssoc_state,
 					BATT_RL_STATUS_RECHARGE);
+		batt_drv->ssoc_state.bd_trickle_full = true;
 
 		/* We can skip the uevent because we have volt tiers >= 100 */
 		if (changed)
@@ -4796,6 +4802,37 @@ static bool gbatt_check_dead_battery(const struct batt_drv *batt_drv)
 	return ssoc_get_capacity(&batt_drv->ssoc_state) == 0;
 }
 
+#define VBATT_CRITICAL_LEVEL		3300000
+#define VBATT_CRITICAL_DEADLINE_SEC	40
+
+static bool gbatt_check_critical_level(const struct batt_drv *batt_drv,
+				       int fg_status)
+{
+	const struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
+	const int soc = ssoc_get_real(ssoc_state);
+
+	if (fg_status == POWER_SUPPLY_STATUS_UNKNOWN)
+		return true;
+
+	if (soc == 0 && ssoc_state->buck_enabled == 1 &&
+	    fg_status == POWER_SUPPLY_STATUS_DISCHARGING) {
+		const ktime_t now = get_boot_sec();
+		int vbatt;
+
+		/* disable the check */
+		if (now > VBATT_CRITICAL_DEADLINE_SEC || batt_drv->batt_critical_voltage == 0)
+			return true;
+
+		vbatt = GPSY_GET_PROP(batt_drv->fg_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW);
+		if (vbatt == -EAGAIN)
+			return false;
+
+		return (vbatt < 0) ? : vbatt < batt_drv->batt_critical_voltage;
+	}
+
+	return false;
+}
+
 #define SSOC_LEVEL_FULL		SSOC_SPOOF
 #define SSOC_LEVEL_HIGH		80
 #define SSOC_LEVEL_NORMAL	30
@@ -4807,9 +4844,10 @@ static bool gbatt_check_dead_battery(const struct batt_drv *batt_drv)
  * NOTE: CRITICAL_LEVEL implies BATTERY_DEAD but BATTERY_DEAD doesn't imply
  * CRITICAL.
  */
-static int gbatt_get_capacity_level(struct batt_ssoc_state *ssoc_state,
+static int gbatt_get_capacity_level(const struct batt_drv *batt_drv,
 				    int fg_status)
 {
+	const struct batt_ssoc_state *ssoc_state = &batt_drv->ssoc_state;
 	const int ssoc = ssoc_get_capacity(ssoc_state);
 	int capacity_level;
 
@@ -4826,8 +4864,7 @@ static int gbatt_get_capacity_level(struct batt_ssoc_state *ssoc_state,
 	} else if (ssoc_state->buck_enabled == -1) {
 		/* only at startup, this should not happen */
 		capacity_level = POWER_SUPPLY_CAPACITY_LEVEL_UNKNOWN;
-	} else if (fg_status == POWER_SUPPLY_STATUS_DISCHARGING ||
-		   fg_status == POWER_SUPPLY_STATUS_UNKNOWN) {
+	} else if (gbatt_check_critical_level(batt_drv, fg_status)) {
 		capacity_level = POWER_SUPPLY_CAPACITY_LEVEL_CRITICAL;
 	} else {
 		capacity_level = POWER_SUPPLY_CAPACITY_LEVEL_LOW;
@@ -5287,8 +5324,7 @@ static void google_battery_work(struct work_struct *work)
 		 * same behavior during the transition 99 -> 100 -> Full
 		 */
 
-		level = gbatt_get_capacity_level(&batt_drv->ssoc_state,
-						 fg_status);
+		level = gbatt_get_capacity_level(batt_drv, fg_status);
 		if (level != batt_drv->capacity_level) {
 			batt_drv->capacity_level = level;
 			notify_psy_changed = true;
@@ -6234,6 +6270,11 @@ static void google_battery_init_work(struct work_struct *work)
 						       GBMS_TAG_HIST);
 	if (!batt_drv->history)
 		pr_err("history not available\n");
+
+	ret = of_property_read_u32(batt_drv->device->of_node, "google,batt-voltage-critical",
+				   &batt_drv->batt_critical_voltage);
+	if (ret < 0)
+		batt_drv->batt_critical_voltage = VBATT_CRITICAL_LEVEL;
 
 	ret = of_property_read_u32(batt_drv->device->of_node,
 				   "google,history-delta-cycle-count",

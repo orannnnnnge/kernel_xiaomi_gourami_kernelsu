@@ -1420,10 +1420,9 @@ void * __init memblock_virt_alloc_try_nid_raw(
 
 	ptr = memblock_virt_alloc_internal(size, align,
 					   min_addr, max_addr, nid);
-#ifdef CONFIG_DEBUG_VM
 	if (ptr && size > 0)
-		memset(ptr, PAGE_POISON_PATTERN, size);
-#endif
+		page_init_poison(ptr, size);
+
 	return ptr;
 }
 
@@ -1538,7 +1537,7 @@ void __init __memblock_free_late(phys_addr_t base, phys_addr_t size)
 
 	for (; cursor < end; cursor++) {
 		__free_pages_bootmem(pfn_to_page(cursor), cursor, 0);
-		totalram_pages++;
+		totalram_pages_inc();
 	}
 }
 

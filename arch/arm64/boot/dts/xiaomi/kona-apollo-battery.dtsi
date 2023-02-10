@@ -11,12 +11,18 @@
  * GNU General Public License for more details.
  */
 
+&google_bms {
+	google,chg-term-voltage = <4400>;
+};
+
 &google_charger {
 	google,thermal-mitigation = <5000000 4300000 3500000 
 		3000000 2500000 2000000 1500000 1000000 500000>;
 };
 
 &google_battery {
+	google,chg-cv-limits = <4300000 4400000 4550000>;
+
 	google,ttf-adapter = <3000>;
 	google,ttf-soc-table = <50 57 70 73 80 84 91 100>;
 	google,ttf-elap-table = <39 47 55 66 78 89 138 191>;

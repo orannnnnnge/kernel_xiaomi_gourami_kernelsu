@@ -17,7 +17,7 @@
 #define SUPPORT_PM_SLEEP 1
 #endif
 
-
+#include <linux/delay.h>
 #include <linux/kernel.h>
 #include <linux/printk.h>
 #include <linux/module.h>
@@ -74,7 +74,7 @@
 #define PPS_KEEP_ALIVE_MAX		3
 #define PPS_CC_TOLERANCE_PCT_DEFAULT	5
 #define PPS_CC_TOLERANCE_PCT_MAX	10
-#define OP_SNK_MW			2500	/* WA for b/135074866 */
+#define OP_SNK_MW			7600	/* WA for b/135074866 */
 #define PD_SNK_MAX_MV			9000
 #define PD_SNK_MIN_MV			5000
 #define PD_SNK_MAX_MA			3000
@@ -109,7 +109,8 @@
 #define THERM_PD_VOLTAGE_MAX 4350
 
 #define usb_pd_is_high_volt(ad) \
-	((ad)->ad_type == CHG_EV_ADAPTER_TYPE_USB_PD && \
+	(((ad)->ad_type == CHG_EV_ADAPTER_TYPE_USB_PD || \
+	(ad)->ad_type == CHG_EV_ADAPTER_TYPE_USB_PD_PPS) && \
 	(ad)->ad_voltage * 100 > PD_SNK_MIN_MV)
 
 enum tcpm_psy_online_states {
@@ -119,10 +120,11 @@ enum tcpm_psy_online_states {
 };
 
 enum pd_pps_stage {
-	PPS_NONE = 0,
+	PPS_NOTSUPP = -1,	/* tried and failed or disconnected */
+	PPS_DISABLED = 0,	/* default state, never tried */
+	PPS_NONE,		/* try to enable */
 	PPS_AVAILABLE,
 	PPS_ACTIVE,
-	PPS_DISABLED,
 };
 
 enum pd_nr_pdo {
@@ -297,7 +299,6 @@ struct chg_drv {
 	/* pps charging */
 	struct pd_pps_data pps_data;
 	unsigned int pps_cc_tolerance_pct;
-	bool auto_switch_pps_pdo;
 
 	/* override voltage and current */
 	bool enable_user_fcc_fv;
@@ -541,9 +542,9 @@ static int info_wlc_state(union gbms_ce_adapter_details *ad,
 		return -EINVAL;
 	}
 
-	if (amperage_max >= WLC_EPP_THRESHOLD_UV) {
+	if (voltage_max >= WLC_EPP_THRESHOLD_UV) {
 		ad->ad_type = CHG_EV_ADAPTER_TYPE_WLC_EPP;
-	} else if (amperage_max >= WLC_BPP_THRESHOLD_UV) {
+	} else if (voltage_max >= WLC_BPP_THRESHOLD_UV) {
 		ad->ad_type = CHG_EV_ADAPTER_TYPE_WLC_SPP;
 	}
 
@@ -780,13 +781,89 @@ static int pps_get_src_cap(struct pd_pps_data *pps,
 	return pps->nr_src_cap;
 }
 
+/*
+ * enable PPS prog mode (Internal), also start the negotiation.
+ * <0 when not supported, 0 if supported (and update state)
+ */
+static int pps_prog_online(struct pd_pps_data *pps,
+			   struct power_supply *tcpm_psy)
+{
+	union power_supply_propval pval = { .intval = TCPM_PSY_PROG_ONLINE, };
+	int ret;
+
+	ret = power_supply_set_property(tcpm_psy, POWER_SUPPLY_PROP_ONLINE, &pval);
+
+	if (ret == -EOPNOTSUPP) {
+		pps->stage = PPS_NOTSUPP;
+	} else if (ret == 0) {
+		pps->pd_online = TCPM_PSY_PROG_ONLINE;
+		pps->stage = PPS_NONE;
+	}
+
+	pps->last_update = get_boot_sec();
+	return ret;
+}
+
+/*
+ * pps_psy can be tcpm, wireless or gcpm_pps.
+ * NOTE: gcpm_pps route the props to the underlying psy
+ */
+static int pps_check_type(struct pd_pps_data *pps_data,
+			  struct power_supply *tcpm_psy)
+{
+	union power_supply_propval pval;
+	int ret;
+
+	if (!tcpm_psy->desc)
+		return -EINVAL;
+
+	/* TODO: add POWER_SUPPLY_TYPE_PPS_PORT? */
+	if (tcpm_psy->desc->type == POWER_SUPPLY_TYPE_WIRELESS)
+		return true;
+
+	/* NOTE: this keep trying with "slow" adapters */
+	ret = power_supply_get_property(tcpm_psy, POWER_SUPPLY_PROP_USB_TYPE, &pval);
+	if (ret == 0 && pval.intval == POWER_SUPPLY_USB_TYPE_PD_PPS)
+		return true;
+	if (ret == 0 && pval.intval == POWER_SUPPLY_USB_TYPE_PD)
+		return true;
+	if (ret == 0 && pval.intval == POWER_SUPPLY_USB_TYPE_C)
+		return true;
+
+	return false;
+}
+
 /* return the update interval pps will vote for
  * . 0 to disable the PPS update internval voter
  * . <0 for error
  */
 static int pps_work(struct pd_pps_data *pps, struct power_supply *tcpm_psy)
 {
-	int pd_online, usbc_type;
+	union power_supply_propval pval;
+	int ret, type_ok, pd_online;
+	int retry = 0;
+	enum pd_pps_stage stage;
+
+	if (!pps)
+		return -EINVAL;
+	if (!tcpm_psy) {
+		pps->stage = PPS_NOTSUPP;
+		return -EINVAL;
+	}
+
+	/*
+	 * POWER_SUPPLY_PROP_PRESENT must reports cable (or field)
+	 * NOTE: TCPM doesn't implement this, WLC and GCPM pps do.
+	 */
+	ret = power_supply_get_property(tcpm_psy, POWER_SUPPLY_PROP_PRESENT,
+					&pval);
+	if (ret == 0 && pval.intval == 0) {
+		pps->stage = PPS_NOTSUPP;
+	}
+
+	/* detection is done for this cycle */
+	if (pps->stage == PPS_NOTSUPP)
+		return 0;
 
 	/* 2) pps->pd_online == TCPM_PSY_PROG_ONLINE && stage == PPS_NONE
 	 *  If the source really support PPS (set in 1): set stage to
@@ -825,53 +902,67 @@ static int pps_work(struct pd_pps_data *pps, struct power_supply *tcpm_psy)
 	if (pd_online < 0)
 		return 0;
 
-	/* 3) pd_online == TCPM_PSY_PROG_ONLINE == pps->pd_online
+	/*
+	 * 3) pd_online == TCPM_PSY_PROG_ONLINE == pps->pd_online
 	 * pps is active now, we are done here. pd_online will change to
 	 * if pd_online is !TCPM_PSY_PROG_ONLINE go back to 1) OR exit.
 	 */
-	pps->stage = (pd_online == pps->pd_online) &&
+	stage = (pd_online == pps->pd_online) &&
 		     (pd_online == TCPM_PSY_PROG_ONLINE) &&
 		     (pps->stage == PPS_AVAILABLE || pps->stage == PPS_ACTIVE) ?
 		     PPS_ACTIVE : PPS_NONE;
+	if (stage != pps->stage) {
+		logbuffer_log(pps->log, "work: pd_online %d->%d stage %d->%d",
+			pps->pd_online, pd_online, pps->stage,
+			stage);
+		pps->stage = stage;
+	}
+
 	if (pps->stage == PPS_ACTIVE)
 		return 0;
 
-	/* 1) stage == PPS_NONE && pps->pd_online!=TCPM_PSY_PROG_ONLINE
-	 *  If usbc_type is POWER_SUPPLY_USB_TYPE_PD_PPS and pd_online is
-	 *  TCPM_PSY_FIXED_ONLINE, enable PSPS (set POWER_SUPPLY_PROP_ONLINE to
-	 *  TCPM_PSY_PROG_ONLINE and reschedule in PD_T_PPS_TIMEOUT.
+	/*
+	 * 1) stage == PPS_NONE && pps->pd_online!=TCPM_PSY_PROG_ONLINE
+	 *  If usbc_type is ok and pd_online is TCPM_PSY_FIXED_ONLINE,
+	 *  set POWER_SUPPLY_PROP_ONLINE to TCPM_PSY_PROG_ONLINE (enable PPS)
+	 *  and reschedule in PD_T_PPS_TIMEOUT.
 	 */
-	usbc_type = GPSY_GET_PROP(tcpm_psy, POWER_SUPPLY_PROP_USB_TYPE);
-	if (pd_online == TCPM_PSY_FIXED_ONLINE &&
-	    usbc_type == POWER_SUPPLY_USB_TYPE_PD_PPS) {
-		int rc, pps_update_interval = 0;
+	type_ok = pps_check_type(pps, tcpm_psy);
+	
+	if (type_ok && pd_online == TCPM_PSY_FIXED_ONLINE) {
+		int rc;
 
-		rc = GPSY_SET_PROP(tcpm_psy,
-				   POWER_SUPPLY_PROP_ONLINE,
-				   TCPM_PSY_PROG_ONLINE);
-		if (rc == -EAGAIN) {
-			/* TODO: lower the loglevel */
-			logbuffer_log(pps->log,"not in SNK_READY, rerun");
-			return -EAGAIN;
+retry_pps_enable:
+		/* 0 = when in PROG */
+		rc = pps_prog_online(pps, tcpm_psy);
+		switch (rc) {
+		case 0:
+			return PD_T_PPS_TIMEOUT;
+		case -EAGAIN:
+			logbuffer_log(pps->log,  "work: not in SNK_READY, rerun");
+			pps->pd_online = pd_online;
+			return rc;
+		case -EOPNOTSUPP:
+			// Recover the PMIC state while on SINK
+			if (retry++ < CHG_TERM_RETRY_CNT) {
+				logbuffer_log(pps->log, "work: PPS_RETRY (%d)", retry);
+				/* Required for the PMIC to recover */
+				msleep(20);
+				goto retry_pps_enable;
+			}
+			pps->stage = PPS_NOTSUPP;
+			break;
+		default:
+			logbuffer_log(pps->log,  "work: PROP_ONLINE (%d)", rc);
+			break;
 		}
+	}
 
-		if (rc == -EOPNOTSUPP) {
-			/* pps_update_interval==0 disable the vote */
-			logbuffer_log(pps->log,"PPS not supported");
-			pps->stage = PPS_DISABLED;
-			if (pps->stay_awake)
-				__pm_relax(pps->pps_ws);
-		} else if (rc != 0) {
-			logbuffer_log(pps->log,
-				      "failed to set PROP_ONLINE, rc = %d",
-				      rc);
-		} else {
-			pps_update_interval = PD_T_PPS_TIMEOUT;
-			pps->pd_online = TCPM_PSY_PROG_ONLINE;
-			pps->last_update = get_boot_sec();
-		}
-
-		return pps_update_interval;
+	/* reset PPS_NOTSUPP with pps_init_state() */
+	if (pps->stage == PPS_NOTSUPP) {
+		if (pps->stay_awake)
+			__pm_relax(pps->pps_ws);
+		logbuffer_log(pps->log, "work: PPS not supported");
 	}
 
 	pps->pd_online = pd_online;
@@ -884,11 +975,10 @@ static int pps_work(struct pd_pps_data *pps, struct power_supply *tcpm_psy)
  *	PPS_UPDATE_DELAY_MS
  * return negative values on errors
  */
-static int pps_update_adapter(struct chg_drv *chg_drv,
-			      int pending_uv, int pending_ua)
+int pps_update_adapter(struct pd_pps_data *pps,
+		       int pending_uv, int pending_ua,
+		       struct power_supply *tcpm_psy)
 {
-	struct pd_pps_data *pps = &chg_drv->pps_data;
-	struct power_supply *tcpm_psy = chg_drv->tcpm_psy;
 	int interval = get_boot_sec() - pps->last_update;
 	int ret;
 
@@ -908,9 +998,6 @@ static int pps_update_adapter(struct chg_drv *chg_drv,
 
 	/* TCPM accepts one change in a power negotiation cycle */
 	if (pps->out_uv != pending_uv) {
-		if (interval * 1000 < PPS_UPDATE_DELAY_MS)
-			return PPS_UPDATE_DELAY_MS;
-
 		ret = GPSY_SET_PROP(tcpm_psy,
 				    POWER_SUPPLY_PROP_VOLTAGE_NOW,
 				    (int)pending_uv);
@@ -918,6 +1005,11 @@ static int pps_update_adapter(struct chg_drv *chg_drv,
 			pps->out_uv = pending_uv;
 			pps->keep_alive_cnt = 0;
 			pps->last_update = get_boot_sec();
+
+			/* voltage is pending too */
+			if (pps->out_uv != pending_uv)
+				return 0;
+
 			return PD_T_PPS_TIMEOUT;
 		} else if (ret != -EAGAIN && ret != -EOPNOTSUPP) {
 			logbuffer_log(pps->log,
@@ -2228,9 +2320,6 @@ static int chg_init_chg_profile(struct chg_drv *chg_drv)
 
 	of_node_put(dn);
 
-	chg_drv->auto_switch_pps_pdo =
-			of_property_read_bool(node, "google,pps-auto-switch");
-
 	pr_info("charging profile in the battery\n");
 
 	return 0;
@@ -3313,7 +3402,7 @@ static int pps_switch_profile(struct chg_drv *chg_drv, bool more_pwr)
 	u32 max_mv, max_ma, max_mw;
 	u32 current_mw, current_ma;
 
-	if (pps->nr_src_cap < 2)
+	if (!pps || !chg_drv->tcpm_psy || pps->nr_src_cap < 2)
 		return -EINVAL;
 
 	current_ma = pps->op_ua / 1000;
@@ -3365,15 +3454,16 @@ static int pps_switch_profile(struct chg_drv *chg_drv, bool more_pwr)
 	return ret;
 }
 
-static int pps_policy(struct chg_drv *chg_drv, int fv_uv, int cc_max)
+static int pps_policy(struct chg_drv *chg_drv, int fv_uv, int cc_max,
+		      struct power_supply *tcpm_psy,
+		      struct power_supply *bat_psy)
 {
 	struct pd_pps_data *pps = &chg_drv->pps_data;
-	struct power_supply *bat_psy = chg_drv->bat_psy;
-	struct power_supply *tcpm_psy = chg_drv->tcpm_psy;
-	struct power_supply *chg_psy = chg_drv->chg_psy;
+	const int ratio = 100 - chg_drv->pps_cc_tolerance_pct;
 	const uint8_t flags = chg_drv->pps_data.chg_flags;
-	int ret = 0, vbatt, ioerr, ichg;
+	int ibatt, vbatt, ioerr;
 	unsigned long exp_mw;
+	int ret = 0;
 
 	if (pps->uv_ovrd || pps->ua_ovrd) {
 		pps->out_uv = pps->uv_ovrd ? : pps->out_uv;
@@ -3397,18 +3487,18 @@ static int pps_policy(struct chg_drv *chg_drv, int fv_uv, int cc_max)
 		return 0;
 	}
 
-	ichg = GPSY_GET_INT_PROP(chg_psy, POWER_SUPPLY_PROP_CURRENT_NOW,
+	ibatt = GPSY_GET_INT_PROP(bat_psy, POWER_SUPPLY_PROP_CURRENT_NOW,
 				 &ioerr);
 	vbatt = GPSY_GET_PROP(bat_psy, POWER_SUPPLY_PROP_VOLTAGE_NOW);
 
 	if (ioerr < 0 || vbatt < 0) {
-		logbuffer_log(pps->log,"Failed to get ichg and vbatt");
+		logbuffer_log(pps->log,"Failed to get ibatt and vbatt");
 		return -EIO;
 	}
 
 	/* TODO: should we compensate for the round down here? */
-	exp_mw = (unsigned long)vbatt * (unsigned long)cc_max / 10 * 11 /
-		 1000000000;
+	exp_mw = ((unsigned long)vbatt * (unsigned long)cc_max) * 11 /
+		 10000000000;
 
 	ret = pps_update_status(pps, tcpm_psy);
 	if (ret < 0) {
@@ -3417,12 +3507,13 @@ static int pps_policy(struct chg_drv *chg_drv, int fv_uv, int cc_max)
 	}
 
 	logbuffer_log(pps->log,
-		"ichg %d, vbatt %d, vbatt*cc_max*1.1 %lu mw, adapter %ld, keep_alive_cnt %d",
-		ichg, vbatt, exp_mw,
+		"ibatt %d, vbatt %d, vbatt*cc_max*1.1 %lu mw, adapter %ld, keep_alive_cnt %d",
+		ibatt, vbatt, exp_mw,
 		(long)pps->out_uv * (long)pps->op_ua / 1000000000,
 		pps->keep_alive_cnt);
 
-	if (ichg >= 0)
+	/* negative current is discharging, should chase the load instead? */
+	if (ibatt <= 0)
 		return 0;
 
 	/* always maximize the input current first */
@@ -3433,17 +3524,11 @@ static int pps_policy(struct chg_drv *chg_drv, int fv_uv, int cc_max)
 	}
 
 	/* demand more power */
-	if ((-ichg < cc_max * (100 - chg_drv->pps_cc_tolerance_pct) / 100) ||
-	    flags & GBMS_CS_FLAG_ILIM) {
-		if (chg_drv->auto_switch_pps_pdo &&
-		    (pps->out_uv == pps->max_uv)) {
+	if ((ibatt < (cc_max * ratio) / 100) || flags & GBMS_CS_FLAG_ILIM) {
+		if (pps->out_uv == pps->max_uv) {
 			ret = pps_switch_profile(chg_drv, true);
-			if (ret == 0)
-				return -ECANCELED;
-			else
-				return 0;
+			return (ret == 0) ? -ECANCELED : 0;
 		}
-
 		pps_adjust_volt(pps, 100000);
 		/* TODO: b/134799977 adjust the max current */
 	/* input power is enough */
@@ -3453,17 +3538,40 @@ static int pps_policy(struct chg_drv *chg_drv, int fv_uv, int cc_max)
 		if (pps->keep_alive_cnt < PPS_KEEP_ALIVE_MAX)
 			return 0;
 
-		if (chg_drv->auto_switch_pps_pdo) {
-			ret = pps_switch_profile(chg_drv, false);
-			if (ret == 0)
-				return -ECANCELED;
-		}
+		ret = pps_switch_profile(chg_drv, false);
+		if (ret == 0)
+			return -ECANCELED;
 
 		pps_adjust_volt(pps, -100000);
 		/* TODO: b/134799977 adjust the max current */
 	}
 
 	return ret;
+}
+
+/*
+ * NOTE: when PPS is active we need to ping the adapter or it will revert
+ * to fixed profile.
+ */
+static int msc_update_pps(struct chg_drv *chg_drv, int fv_uv, int cc_max)
+{
+	struct pd_pps_data *pps_data = &chg_drv->pps_data;
+	int rc;
+
+	/* the policy determines the adapter output voltage and current */
+	rc = pps_policy(chg_drv, fv_uv, cc_max,
+			chg_drv->tcpm_psy, chg_drv->bat_psy);
+	if (rc == -ECANCELED)
+		return -ECANCELED;
+
+	/* adjust PPS out for target demand */
+	rc = pps_update_adapter(pps_data, pps_data->out_uv, pps_data->op_ua,
+				chg_drv->tcpm_psy);
+
+	if (rc == -EAGAIN)
+		rc = CHG_DELAY_INIT_DETECT_MS;
+
+	return rc;
 }
 
 /* NOTE: chg_work() vote 0 at the beginning of each loop to gate the updates
@@ -3501,24 +3609,15 @@ static int msc_update_charger_cb(struct votable *votable,
 	}
 
 	if (chg_drv->pps_data.stage == PPS_ACTIVE) {
-		int pps_update_interval = update_interval;
-		struct pd_pps_data *pps = &chg_drv->pps_data;
+		int pps_ui;
+		pps_ui = msc_update_pps(chg_drv, fv_uv, cc_max);
 
-		/* need to update (ping) the adapter even when the policy
-		 * return an error or the adapter will revert back to PD.
-		 */
-		rc = pps_policy(chg_drv, fv_uv, cc_max);
-		if (rc == -ECANCELED)
+		/* I am not sure that is the case */
+		if (pps_ui == -ECANCELED)
 			goto msc_done;
-
-		rc = pps_update_adapter(chg_drv, pps->out_uv, pps->op_ua);
-		if (rc >= 0)
-			pps_update_interval = rc;
-		else if (rc == -EAGAIN)
-			pps_update_interval = CHG_WORK_ERROR_RETRY_MS;
-
-		if (pps_update_interval < update_interval)
-			update_interval = pps_update_interval;
+		/* force ping */
+		if (pps_ui >= 0 && pps_ui < update_interval)
+			update_interval = pps_ui;
 	}
 
 	rc = chg_update_charger(chg_drv, fv_uv, cc_max);

@@ -1064,6 +1064,7 @@ int fg_get_battery_voltage(struct fg_dev *fg, int *val)
 
 	pr_debug("buf: %x %x temp: %x\n", buf[0], buf[1], temp);
 	*val = div_u64((u64)temp * BATT_VOLTAGE_NUMR, BATT_VOLTAGE_DENR);
+
 	return 0;
 }
 

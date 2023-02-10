@@ -40,7 +40,7 @@ static void em_debug_create_cs(struct em_cap_state *cs, struct dentry *pd)
 	debugfs_create_ulong("frequency", 0444, d, &cs->frequency);
 	debugfs_create_ulong("power", 0444, d, &cs->power);
 	debugfs_create_ulong("cost", 0444, d, &cs->cost);
-	debugfs_create_ulong("inefficient", 0444, d, &ps->flags);
+	debugfs_create_ulong("inefficient", 0444, d, &cs->flags);
 }
 
 static int em_debug_cpus_show(struct seq_file *s, void *unused)

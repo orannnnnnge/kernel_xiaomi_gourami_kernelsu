@@ -1135,10 +1135,6 @@ update_next_max_freq:
 		cpumask_copy(&sg_policy->pmu_ignored_mask, &local_pmu_ignored_mask);
 		raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
 
-		trace_pmu_limit(sg_policy);
-		cpu = cpumask_last(policy->related_cpus) + 1;
-		cpufreq_cpu_put(policy);
-
 skip_ccpu:
 		trace_pmu_limit(sg_policy);
 		cpu = cpumask_last(policy->related_cpus) + 1;
@@ -1618,6 +1614,7 @@ static void sugov_tunables_save(struct cpufreq_policy *policy,
 	cached->hispeed_freq = tunables->hispeed_freq;
 	cached->up_rate_limit_us = tunables->up_rate_limit_us;
 	cached->down_rate_limit_us = tunables->down_rate_limit_us;
+	cached->down_rate_limit_scale_pow = tunables->down_rate_limit_scale_pow;
 	cached->lcpi_threshold = tunables->lcpi_threshold;
 	cached->spc_threshold = tunables->spc_threshold;
 	cached->limit_frequency = tunables->limit_frequency;
@@ -1645,6 +1642,7 @@ static void sugov_tunables_restore(struct cpufreq_policy *policy)
 	tunables->hispeed_freq = cached->hispeed_freq;
 	tunables->up_rate_limit_us = cached->up_rate_limit_us;
 	tunables->down_rate_limit_us = cached->down_rate_limit_us;
+	tunables->down_rate_limit_scale_pow = cached->down_rate_limit_scale_pow;
 	tunables->lcpi_threshold = cached->lcpi_threshold;
 	tunables->spc_threshold = cached->spc_threshold;
 	tunables->limit_frequency = cached->limit_frequency;

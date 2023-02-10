@@ -93,6 +93,7 @@ struct cnss_pci_data {
 	u8 drv_connected_last;
 	u16 def_link_speed;
 	u16 def_link_width;
+	u16 cur_link_speed;
 	struct completion wake_event;
 	u8 monitor_wake_intr;
 	struct iommu_domain *iommu_domain;
@@ -120,6 +121,7 @@ struct cnss_pci_data {
 	struct cnss_misc_reg *wlaon_reg;
 	u32 wlaon_reg_size;
 	u8 iommu_geometry;
+	bool drv_supported;
 };
 
 static inline void cnss_set_pci_priv(struct pci_dev *pci_dev, void *data)

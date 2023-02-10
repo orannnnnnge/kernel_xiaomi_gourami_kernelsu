@@ -314,13 +314,12 @@ unlock:
 
 /**
  * workingset_eviction - note the eviction of a page from memory
- * @mapping: address space the page was backing
  * @page: the page being evicted
  *
- * Returns a shadow entry to be stored in @mapping->i_pages in place
+ * Returns a shadow entry to be stored in @page->mapping->i_pages in place
  * of the evicted @page so that a later refault can be detected.
  */
-void *workingset_eviction(struct address_space *mapping, struct page *page)
+void *workingset_eviction(struct page *page)
 {
 	struct pglist_data *pgdat = page_pgdat(page);
 	struct mem_cgroup *memcg = page_memcg(page);
@@ -485,12 +484,18 @@ void workingset_update_node(struct radix_tree_node *node)
 	 * already where they should be. The list_empty() test is safe
 	 * as node->private_list is protected by the i_pages lock.
 	 */
+	VM_WARN_ON_ONCE(!irqs_disabled());  /* For __inc_lruvec_page_state */
+
 	if (node->count && node->count == node->exceptional) {
-		if (list_empty(&node->private_list))
+		if (list_empty(&node->private_list)) {
 			list_lru_add(&shadow_nodes, &node->private_list);
+			__inc_lruvec_slab_state(node, WORKINGSET_NODES);
+		}
 	} else {
-		if (!list_empty(&node->private_list))
+		if (!list_empty(&node->private_list)) {
 			list_lru_del(&shadow_nodes, &node->private_list);
+			__dec_lruvec_slab_state(node, WORKINGSET_NODES);
+		}
 	}
 }
 
@@ -528,12 +533,14 @@ static unsigned long count_shadow_nodes(struct shrinker *shrinker,
 #ifdef CONFIG_MEMCG
 	if (sc->memcg) {
 		struct lruvec *lruvec;
+		int i;
 
-		pages = mem_cgroup_node_nr_lru_pages(sc->memcg, sc->nid,
-						     LRU_ALL);
 		lruvec = mem_cgroup_lruvec(NODE_DATA(sc->nid), sc->memcg);
-		pages += lruvec_page_state(lruvec, NR_SLAB_RECLAIMABLE);
-		pages += lruvec_page_state(lruvec, NR_SLAB_UNRECLAIMABLE);
+		for (pages = 0, i = 0; i < NR_LRU_LISTS; i++)
+			pages += lruvec_page_state_local(lruvec,
+							 NR_LRU_BASE + i);
+		pages += lruvec_page_state_local(lruvec, NR_SLAB_RECLAIMABLE);
+		pages += lruvec_page_state_local(lruvec, NR_SLAB_UNRECLAIMABLE);
 	} else
 #endif
 		pages = node_present_pages(sc->nid);
@@ -581,6 +588,8 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 	}
 
 	list_lru_isolate(lru, item);
+	__dec_lruvec_slab_state(node, WORKINGSET_NODES);
+
 	spin_unlock(lru_lock);
 
 	/*
@@ -608,7 +617,7 @@ static enum lru_status shadow_lru_isolate(struct list_head *item,
 	}
 	if (WARN_ON_ONCE(node->exceptional))
 		goto out_invalid;
-	__inc_lruvec_page_state(virt_to_page(node), WORKINGSET_NODERECLAIM);
+	__inc_lruvec_slab_state(node, WORKINGSET_NODERECLAIM);
 	__radix_tree_delete_node(&mapping->i_pages, node,
 				 workingset_lookup_update(mapping));
 
@@ -657,7 +666,7 @@ static int __init workingset_init(void)
 	 * double the initial memory by using totalram_pages as-is.
 	 */
 	timestamp_bits = BITS_PER_LONG - EVICTION_SHIFT;
-	max_order = fls_long(totalram_pages - 1);
+	max_order = fls_long(totalram_pages() - 1);
 	if (max_order > timestamp_bits)
 		bucket_order = max_order - timestamp_bits;
 	pr_info("workingset: timestamp_bits=%d max_order=%d bucket_order=%u\n",

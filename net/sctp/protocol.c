@@ -373,7 +373,7 @@ static int sctp_v4_available(union sctp_addr *addr, struct sctp_sock *sp)
 	if (addr->v4.sin_addr.s_addr != htonl(INADDR_ANY) &&
 	   ret != RTN_LOCAL &&
 	   !sp->inet.freebind &&
-	   !net->ipv4.sysctl_ip_nonlocal_bind)
+	    !READ_ONCE(net->ipv4.sysctl_ip_nonlocal_bind))
 		return 0;
 
 	if (ipv6_only_sock(sctp_opt2sk(sp)))
@@ -1390,6 +1390,7 @@ static __init int sctp_init(void)
 	int status = -EINVAL;
 	unsigned long goal;
 	unsigned long limit;
+	unsigned long nr_pages = totalram_pages();
 	int max_share;
 	int order;
 	int num_entries;
@@ -1448,10 +1449,10 @@ static __init int sctp_init(void)
 	 * The methodology is similar to that of the tcp hash tables.
 	 * Though not identical.  Start by getting a goal size
 	 */
-	if (totalram_pages >= (128 * 1024))
-		goal = totalram_pages >> (22 - PAGE_SHIFT);
+	if (nr_pages >= (128 * 1024))
+		goal = nr_pages >> (22 - PAGE_SHIFT);
 	else
-		goal = totalram_pages >> (24 - PAGE_SHIFT);
+		goal = nr_pages >> (24 - PAGE_SHIFT);
 
 	/* Then compute the page order for said goal */
 	order = get_order(goal);
