@@ -183,6 +183,14 @@ __first_valid_page(unsigned long pfn, unsigned long nr_pages)
  * returns an error.  We then clean up by restoring the migration type on
  * pageblocks we may have modified and return -EBUSY to caller.  This
  * prevents two threads from simultaneously working on overlapping ranges.
+ *
+ * Please note that there is no strong synchronization with the page allocator
+ * either. Pages might be freed while their page blocks are marked ISOLATED.
+ * In some cases pages might still end up on pcp lists and that would allow
+ * for their allocation even when they are in fact isolated already. Depending
+ * on how strong of a guarantee the caller needs drain_all_pages might be needed
+ * (e.g. __offline_pages will need to call it after check for isolated range for
+ * a next retry).
  */
 int start_isolate_page_range(unsigned long start_pfn, unsigned long end_pfn,
 			     unsigned migratetype, bool skip_hwpoisoned_pages)

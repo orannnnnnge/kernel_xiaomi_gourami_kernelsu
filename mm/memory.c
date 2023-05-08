@@ -40,7 +40,6 @@
 
 #include <linux/kernel_stat.h>
 #include <linux/mm.h>
-#include <linux/mm_inline.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/coredump.h>
 #include <linux/sched/numa_balancing.h>
@@ -70,6 +69,8 @@
 #include <linux/userfaultfd_k.h>
 #include <linux/dax.h>
 #include <linux/oom.h>
+#include <linux/mm_inline.h>
+#include <linux/mmzone.h>
 
 #include <trace/events/kmem.h>
 
@@ -1390,8 +1391,7 @@ again:
 					force_flush = 1;
 					set_page_dirty(page);
 				}
-				if (pte_young(ptent) &&
-				    likely(!(vma->vm_flags & VM_SEQ_READ)))
+				if (pte_young(ptent) && likely(vma_has_recency(vma)))
 					SetPageReferenced(page);
 			}
 			rss[mm_counter(page)]--;
@@ -3074,46 +3074,20 @@ void unmap_mapping_range(struct address_space *mapping,
 }
 EXPORT_SYMBOL(unmap_mapping_range);
 
-#ifdef CONFIG_LRU_GEN
-static void lru_gen_enter_fault(struct vm_area_struct *vma)
-{
-	/* the LRU algorithm doesn't apply to sequential or random reads */
-	current->in_lru_fault = !(vma->vm_flags & (VM_SEQ_READ | VM_RAND_READ));
-}
-
-static void lru_gen_exit_fault(void)
-{
-	current->in_lru_fault = false;
-}
-
 static void lru_gen_swap_refault(struct page *page, swp_entry_t entry)
 {
-	void *item;
-	struct address_space *mapping = swap_address_space(entry);
-	pgoff_t index = swp_offset(entry);
+	if (lru_gen_enabled()) {
+		void *item;
+		struct address_space *mapping = swap_address_space(entry);
+		pgoff_t index = swp_offset(entry);
 
-	if (!lru_gen_enabled())
-		return;
-
-	rcu_read_lock();
-	item = radix_tree_lookup(&mapping->i_pages, index);
-	rcu_read_unlock();
-	if (radix_tree_exceptional_entry(item))
-		lru_gen_refault(page, item);
+		rcu_read_lock();
+		item = radix_tree_lookup(&mapping->i_pages, index);
+		rcu_read_unlock();
+		if (radix_tree_exceptional_entry(item))
+			lru_gen_refault(page, item);
+	}
 }
-#else
-static void lru_gen_enter_fault(struct vm_area_struct *vma)
-{
-}
-
-static void lru_gen_exit_fault(void)
-{
-}
-
-static void lru_gen_swap_refault(struct page *page, swp_entry_t entry)
-{
-}
-#endif /* CONFIG_LRU_GEN */
 
 /*
  * We enter with non-exclusive mmap_sem (to exclude vma changes,
@@ -4402,6 +4376,27 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 
 	return handle_pte_fault(&vmf);
 }
+
+#ifdef CONFIG_LRU_GEN
+static void lru_gen_enter_fault(struct vm_area_struct *vma)
+{
+	/* the LRU algorithm only applies to accesses with recency */
+	current->in_lru_fault = vma_has_recency(vma);
+}
+
+static void lru_gen_exit_fault(void)
+{
+	current->in_lru_fault = false;
+}
+#else
+static void lru_gen_enter_fault(struct vm_area_struct *vma)
+{
+}
+
+static void lru_gen_exit_fault(void)
+{
+}
+#endif /* CONFIG_LRU_GEN */
 
 /*
  * By the time we get here, we already hold the mm semaphore

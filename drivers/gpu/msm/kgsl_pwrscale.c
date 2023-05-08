@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2010-2019, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/devfreq_cooling.h>
 #include <linux/slab.h>
+#include <linux/msm_kgsl.h>
 
 #include "kgsl_device.h"
 #include "kgsl_pwrscale.h"
@@ -412,7 +414,6 @@ int kgsl_devfreq_get_dev_status(struct device *dev,
 		last_b->ram_time = device->pwrscale.accum_stats.ram_time;
 		last_b->ram_wait = device->pwrscale.accum_stats.ram_wait;
 		last_b->mod = device->pwrctrl.bus_mod;
-		last_b->gpu_minfreq = pwrctrl->pwrlevels[pwrctrl->min_pwrlevel].gpu_freq;
 	}
 
 	kgsl_pwrctrl_busy_time(device, stat->total_time, stat->busy_time);
@@ -519,7 +520,6 @@ int kgsl_busmon_get_dev_status(struct device *dev,
 		b->ram_time = last_b->ram_time;
 		b->ram_wait = last_b->ram_wait;
 		b->mod = last_b->mod;
-		b->gpu_minfreq = last_b->gpu_minfreq;
 	}
 	return 0;
 }
@@ -610,7 +610,6 @@ int kgsl_busmon_target(struct device *dev, unsigned long *freq, u32 flags)
 	/* Update bus vote if AB or IB is modified */
 	if ((pwr->bus_mod != b) || (pwr->bus_ab_mbytes != ab_mbytes)) {
 		pwr->bus_percent_ab = device->pwrscale.bus_profile.percent_ab;
-		pwr->ddr_stall_percent = device->pwrscale.bus_profile.wait_active_percent;
 		pwr->bus_ab_mbytes = ab_mbytes;
 		kgsl_pwrctrl_buslevel_update(device, true);
 	}
@@ -678,12 +677,20 @@ static int opp_notify(struct notifier_block *nb,
 			min_level = level;
 	}
 
-	pwr->thermal_pwrlevel = max_level;
 	pwr->thermal_pwrlevel_floor = min_level;
 
-	/* Update the current level using the new limit */
-	kgsl_pwrctrl_pwrlevel_change(device, pwr->active_pwrlevel);
 	mutex_unlock(&device->mutex);
+
+	if (kgsl_pwr_limits_set_freq(pwr->cooling_pwr_limit,
+			pwr->pwrlevels[max_level].gpu_freq)) {
+		dev_err(device->dev,
+				"Failed to set cooling thermal limit via limits fw\n");
+		mutex_lock(&device->mutex);
+		pwr->thermal_pwrlevel = max_level;
+		/* Update the current level using the new limit */
+		kgsl_pwrctrl_pwrlevel_change(device, pwr->active_pwrlevel);
+		mutex_unlock(&device->mutex);
+	}
 
 	return 0;
 }

@@ -108,11 +108,17 @@ static DEFINE_PER_CPU(struct sugov_cpu, sugov_cpu);
 static unsigned int stale_ns;
 static DEFINE_PER_CPU(struct sugov_tunables *, cached_tunables);
 static struct kthread_worker pmu_worker;
-static struct kthread_delayed_work pmu_work;
-static DEFINE_MUTEX(pmu_poll_enable_lock);
+static struct kthread_work pmu_work;
+static struct irq_work pmu_irq_work;
+static DEFINE_SPINLOCK(pmu_poll_enable_lock);
+static u64 pmu_poll_last_update;
+static bool pmu_poll_cancelling;
+static bool pmu_poll_in_progress;
 extern int create_sysfs_node(void);
 extern bool pmu_poll_enabled;
 extern unsigned int pmu_poll_time_ms;
+
+static void pmu_poll_defer_work(u64 time);
 
 extern int get_ev_data(int cpu, int inst_ev, int cyc_ev, int stall_ev, int cachemiss_ev,
 			unsigned long *inst, unsigned long *cyc,
@@ -151,16 +157,13 @@ static inline bool update_pmu_throttle_on_ignored_cpus(struct sugov_policy *sg_p
 	return true;
 }
 
-static inline void trace_pmu_limit(struct sugov_policy *sg_policy)
+static inline void trace_pmu_limit(struct sugov_policy *sg_policy, unsigned int freq)
 {
 	if (trace_clock_set_rate_enabled()) {
 		char trace_name[32] = {0};
 		scnprintf(trace_name, sizeof(trace_name), "pmu_limit_cpu%d",
 			  sg_policy->policy->cpu);
-		trace_clock_set_rate(trace_name, sg_policy->under_pmu_throttle ?
-				     sg_policy->tunables->limit_frequency :
-				     sg_policy->policy->cpuinfo.max_freq,
-				     raw_smp_processor_id());
+		trace_clock_set_rate(trace_name, freq, raw_smp_processor_id());
 	}
 }
 
@@ -548,6 +551,12 @@ unsigned long schedutil_cpu_util(int cpu, unsigned long util_cfs,
 	return min(max, util);
 }
 
+unsigned long sched_cpu_util(int cpu, unsigned long max)
+{
+	return schedutil_cpu_util(cpu, cpu_util_cfs(cpu_rq(cpu)), max,
+				  ENERGY_UTIL, NULL);
+}
+
 #ifdef CONFIG_SCHED_WALT
 static unsigned long sugov_get_util(struct sugov_cpu *sg_cpu)
 {
@@ -783,6 +792,8 @@ static void sugov_update_single(struct update_util_data *hook, u64 time,
 	sugov_iowait_boost(sg_cpu, time, flags);
 	sg_cpu->last_update = time;
 
+	pmu_poll_defer_work(time);
+
 	ignore_dl_rate_limit(sg_cpu, sg_policy);
 
 	if (!sugov_should_update_freq(sg_policy, time))
@@ -923,6 +934,8 @@ sugov_update_shared(struct update_util_data *hook, u64 time, unsigned int flags)
 	sugov_iowait_boost(sg_cpu, time, flags);
 	sg_cpu->last_update = time;
 
+	pmu_poll_defer_work(time);
+
 	sugov_calc_avg_cap(sg_policy, sg_cpu->walt_load.ws,
 			   sg_policy->policy->cur);
 	ignore_dl_rate_limit(sg_cpu, sg_policy);
@@ -975,10 +988,10 @@ static void sugov_work(struct kthread_work *work)
 		freq_qos_update_request(&sg_policy->pmu_max_freq_req,
 					sg_policy->policy->cpuinfo.max_freq);
 
+		trace_pmu_limit(sg_policy, sg_policy->policy->cpuinfo.max_freq);
+
 		sg_policy->under_pmu_throttle = false;
 		sg_policy->relax_pmu_throttle = false;
-
-		trace_pmu_limit(sg_policy);
 	}
 
 	mutex_lock(&sg_policy->work_lock);
@@ -995,24 +1008,39 @@ static void sugov_irq_work(struct irq_work *irq_work)
 	kthread_queue_work(&sg_policy->worker, &sg_policy->work);
 }
 
-void pmu_poll_enable(void)
+int pmu_poll_enable(void)
 {
 	// Check pmu_poll_init finish successfully
-	if (!pmu_work.work.func || !pmu_worker.task)
-		return;
+	if (!pmu_work.func || !pmu_worker.task)
+		return -EBUSY;
 
 	// Check sg_policy for whole clusters are initialized correctly
 	if (!check_sg_policy_initialized())
-		return;
+		return -EBUSY;
 
-	mutex_lock(&pmu_poll_enable_lock);
+	spin_lock(&pmu_poll_enable_lock);
 
-	if (!pmu_poll_enabled) {
-		pmu_poll_enabled = true;
-		kthread_mod_delayed_work(&pmu_worker, &pmu_work, msecs_to_jiffies(0));
+	if (pmu_poll_cancelling) {
+		spin_unlock(&pmu_poll_enable_lock);
+		return -EBUSY;
 	}
 
-	mutex_unlock(&pmu_poll_enable_lock);
+	if (!pmu_poll_enabled) {
+		/*
+		 * If we initialize and clean up properly, this should never
+		 * happen.
+		 */
+		if (WARN_ON(pmu_poll_in_progress))
+			pmu_poll_in_progress = false;
+
+		pmu_poll_enabled = true;
+		pmu_poll_last_update = 0;
+		trace_clock_set_rate("PMU_POLL", 1, raw_smp_processor_id());
+	}
+
+	spin_unlock(&pmu_poll_enable_lock);
+
+	return 0;
 }
 
 void pmu_poll_disable(void)
@@ -1021,20 +1049,37 @@ void pmu_poll_disable(void)
 	struct cpufreq_policy *policy = NULL;
 	struct sugov_policy *sg_policy = NULL;
 
-	mutex_lock(&pmu_poll_enable_lock);
+	spin_lock(&pmu_poll_enable_lock);
 
 	if (pmu_poll_enabled) {
 		pmu_poll_enabled = false;
+		trace_clock_set_rate("PMU_POLL", 0, raw_smp_processor_id());
 
-		kthread_cancel_delayed_work_sync(&pmu_work);
+		irq_work_sync(&pmu_irq_work);
+
+		/*
+		 * We must temporarily drop the lock to cancel the pmu_work.
+		 * pmu_poll_cancelling should block any potential attempt to
+		 * enable pmu_poll while the lock is dropped.
+		 *
+		 * pmu_defer_work() should see pmu_poll_enabled === false and
+		 * continue to be blocked/NOP.
+		 */
+		pmu_poll_cancelling = true;
+		spin_unlock(&pmu_poll_enable_lock);
+		kthread_cancel_work_sync(&pmu_work);
+		spin_lock(&pmu_poll_enable_lock);
+		pmu_poll_cancelling = false;
 
 		while (cpu < CPU_NR) {
 			policy = cpufreq_cpu_get(cpu);
 			sg_policy = policy->governor_data;
 
-			if (sg_policy)
+			if (sg_policy) {
 				freq_qos_update_request(&sg_policy->pmu_max_freq_req,
 							policy->cpuinfo.max_freq);
+				trace_pmu_limit(sg_policy, policy->cpuinfo.max_freq);
+			}
 			else
 				pr_err("no sugov policy for cpu %d\n", cpu);
 
@@ -1043,7 +1088,7 @@ void pmu_poll_disable(void)
 		}
 	}
 
-	mutex_unlock(&pmu_poll_enable_lock);
+	spin_unlock(&pmu_poll_enable_lock);
 }
 
 static void pmu_limit_work(struct kthread_work *work)
@@ -1089,14 +1134,16 @@ static void pmu_limit_work(struct kthread_work *work)
 					  STALL_EV, L3D_CACHE_REFILL_EV, &inst, &cyc,
 					  &stall, &cachemiss);
 
-			switch (ret){
-			case -EINVAL:
+			if (ret) {
 				sg_policy->tunables->pmu_limit_enable = false;
 				pr_err("ev_data read fail\n");
 				goto update_next_max_freq;
-			case -ENODATA:
-				goto skip_ccpu;
-			};
+			}
+
+			if (inst == 0 || cyc == 0) {
+				pr_err("error in pmu read for cpu %d\n", ccpu);
+				goto update_next_max_freq;
+			}
 
 			lcpi = cachemiss * 1000 / inst;
 			spc = stall * 100 / cyc;
@@ -1129,20 +1176,45 @@ static void pmu_limit_work(struct kthread_work *work)
 update_next_max_freq:
 
 		freq_qos_update_request(&sg_policy->pmu_max_freq_req, next_max_freq);
+		trace_pmu_limit(sg_policy, next_max_freq);
 
 		raw_spin_lock_irqsave(&sg_policy->update_lock, flags);
 		sg_policy->under_pmu_throttle = pmu_throttle;
 		cpumask_copy(&sg_policy->pmu_ignored_mask, &local_pmu_ignored_mask);
 		raw_spin_unlock_irqrestore(&sg_policy->update_lock, flags);
 
-skip_ccpu:
-		trace_pmu_limit(sg_policy);
 		cpu = cpumask_last(policy->related_cpus) + 1;
 		cpufreq_cpu_put(policy);
 	}
 
-	kthread_mod_delayed_work(&pmu_worker, &pmu_work, msecs_to_jiffies(pmu_poll_time_ms));
+	pmu_poll_in_progress = false;
+
 	return;
+}
+
+static void pmu_poll_defer_work(u64 time)
+{
+	u64 delta_ms;
+
+	if (!spin_trylock(&pmu_poll_enable_lock))
+		return;
+
+	if (!pmu_poll_enabled)
+		goto unlock;
+
+	if (pmu_poll_in_progress)
+		goto unlock;
+
+	delta_ms = (time - pmu_poll_last_update) / NSEC_PER_MSEC;
+
+	if (delta_ms > pmu_poll_time_ms) {
+		pmu_poll_last_update = time;
+		pmu_poll_in_progress = true;
+		irq_work_queue(&pmu_irq_work);
+	}
+
+unlock:
+	spin_unlock(&pmu_poll_enable_lock);
 }
 
 /************************** sysfs interface ************************/
@@ -1499,6 +1571,11 @@ static void sugov_policy_free(struct sugov_policy *sg_policy)
 	kfree(sg_policy);
 }
 
+static void pmu_poll_irq_work(struct irq_work *irq_work)
+{
+	kthread_queue_work(&pmu_worker, &pmu_work);
+}
+
 static int pmu_poll_init(void)
 {
 	int ret = 0;
@@ -1508,7 +1585,8 @@ static int pmu_poll_init(void)
 	attr.sched_policy = SCHED_FIFO;
 	attr.sched_priority = MAX_USER_RT_PRIO / 2;
 
-	kthread_init_delayed_work(&pmu_work, pmu_limit_work);
+	init_irq_work(&pmu_irq_work, pmu_poll_irq_work);
+	kthread_init_work(&pmu_work, pmu_limit_work);
 	kthread_init_worker(&pmu_worker);
 	thread = kthread_create(kthread_worker_fn, &pmu_worker, "sched_pmu_wq");
 	if (IS_ERR(thread)) {

@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
  *
  * RMNET_CTL client handlers
  *
  */
 
+#include <soc/qcom/rmnet_ctl.h>
 #include <linux/debugfs.h>
 #include <linux/ipc_logging.h>
-#include <soc/qcom/rmnet_ctl.h>
 #include "rmnet_ctl_client.h"
 
 #define RMNET_CTL_LOG_PAGE 10
@@ -27,10 +26,6 @@ struct rmnet_ctl_endpoint {
 	void *ipc_log;
 };
 
-#if defined(CONFIG_IPA_DEBUG) || defined(CONFIG_MHI_DEBUG)
-#define CONFIG_RMNET_CTL_DEBUG 1
-#endif
-
 #ifdef CONFIG_RMNET_CTL_DEBUG
 static u8 ipc_log_lvl = RMNET_CTL_LOG_DEBUG;
 #else
@@ -40,13 +35,13 @@ static u8 ipc_log_lvl = RMNET_CTL_LOG_ERR;
 static DEFINE_SPINLOCK(client_lock);
 static struct rmnet_ctl_endpoint ctl_ep;
 
-void rmnet_ctl_set_dbgfs(bool enable)
+void rmnet_ctl_endpoint_setdev(const struct rmnet_ctl_dev *dev)
 {
-	if (enable) {
-		if (IS_ERR_OR_NULL(ctl_ep.dbgfs_dir))
-			ctl_ep.dbgfs_dir = debugfs_create_dir(
-				RMNET_CTL_LOG_NAME, NULL);
+	rcu_assign_pointer(ctl_ep.dev, dev);
 
+	if (dev) {
+		ctl_ep.dbgfs_dir = debugfs_create_dir(
+					RMNET_CTL_LOG_NAME, NULL);
 		if (!IS_ERR_OR_NULL(ctl_ep.dbgfs_dir))
 			ctl_ep.dbgfs_loglvl = debugfs_create_u8(
 				RMNET_CTL_LOG_LVL, 0644, ctl_ep.dbgfs_dir,
@@ -57,16 +52,7 @@ void rmnet_ctl_set_dbgfs(bool enable)
 				RMNET_CTL_LOG_PAGE, RMNET_CTL_LOG_NAME, 0);
 	} else {
 		debugfs_remove_recursive(ctl_ep.dbgfs_dir);
-		ipc_log_context_destroy(ctl_ep.ipc_log);
-		ctl_ep.dbgfs_dir = NULL;
-		ctl_ep.dbgfs_loglvl = NULL;
-		ctl_ep.ipc_log = NULL;
 	}
-}
-
-void rmnet_ctl_endpoint_setdev(const struct rmnet_ctl_dev *dev)
-{
-	rcu_assign_pointer(ctl_ep.dev, dev);
 }
 
 void rmnet_ctl_endpoint_post(const void *data, size_t len)
@@ -77,38 +63,22 @@ void rmnet_ctl_endpoint_post(const void *data, size_t len)
 	if (unlikely(!data || !len))
 		return;
 
-	if (len == 0xFFFFFFFF) {
-		skb = (struct sk_buff *)data;
-		rmnet_ctl_log_info("RX", skb->data, skb->len);
+	rmnet_ctl_log_info("RX", data, len);
 
-		rcu_read_lock();
+	rcu_read_lock();
 
-		client = rcu_dereference(ctl_ep.client);
-		if (client && client->hooks.ctl_dl_client_hook) {
+	client = rcu_dereference(ctl_ep.client);
+
+	if (client && client->hooks.ctl_dl_client_hook) {
+		skb = alloc_skb(len, GFP_ATOMIC);
+		if (skb) {
+			skb_put_data(skb, data, len);
 			skb->protocol = htons(ETH_P_MAP);
 			client->hooks.ctl_dl_client_hook(skb);
-		} else {
-			kfree(skb);
 		}
-
-		rcu_read_unlock();
-	} else {
-		rmnet_ctl_log_info("RX", data, len);
-
-		rcu_read_lock();
-
-		client = rcu_dereference(ctl_ep.client);
-		if (client && client->hooks.ctl_dl_client_hook) {
-			skb = alloc_skb(len, GFP_ATOMIC);
-			if (skb) {
-				skb_put_data(skb, data, len);
-				skb->protocol = htons(ETH_P_MAP);
-				client->hooks.ctl_dl_client_hook(skb);
-			}
-		}
-
-		rcu_read_unlock();
 	}
+
+	rcu_read_unlock();
 }
 
 void *rmnet_ctl_register_client(struct rmnet_ctl_client_hooks *hook)
@@ -136,8 +106,6 @@ void *rmnet_ctl_register_client(struct rmnet_ctl_client_hooks *hook)
 
 	spin_unlock(&client_lock);
 
-	rmnet_ctl_set_dbgfs(true);
-
 	return client;
 }
 EXPORT_SYMBOL(rmnet_ctl_register_client);
@@ -160,8 +128,6 @@ int rmnet_ctl_unregister_client(void *handle)
 	synchronize_rcu();
 	kfree(client);
 
-	rmnet_ctl_set_dbgfs(false);
-
 	return 0;
 }
 EXPORT_SYMBOL(rmnet_ctl_unregister_client);
@@ -172,10 +138,8 @@ int rmnet_ctl_send_client(void *handle, struct sk_buff *skb)
 	struct rmnet_ctl_dev *dev;
 	int rc = -EINVAL;
 
-	if (client != rcu_dereference(ctl_ep.client)) {
-		kfree_skb(skb);
+	if (client != rcu_dereference(ctl_ep.client))
 		return rc;
-	}
 
 	rmnet_ctl_log_info("TX", skb->data, skb->len);
 
@@ -184,13 +148,11 @@ int rmnet_ctl_send_client(void *handle, struct sk_buff *skb)
 	dev = rcu_dereference(ctl_ep.dev);
 	if (dev && dev->xmit)
 		rc = dev->xmit(dev, skb);
-	else
-		kfree_skb(skb);
 
 	rcu_read_unlock();
 
 	if (rc)
-		rmnet_ctl_log_err("TXE", rc, NULL, 0);
+		rmnet_ctl_log_err("TXE", rc, skb->data, skb->len);
 
 	return rc;
 }
@@ -209,16 +171,3 @@ void rmnet_ctl_log(enum rmnet_ctl_log_lvl lvl, const char *msg,
 	}
 }
 EXPORT_SYMBOL(rmnet_ctl_log);
-
-static struct rmnet_ctl_client_if client_if = {
-	.reg = rmnet_ctl_register_client,
-	.dereg = rmnet_ctl_unregister_client,
-	.send = rmnet_ctl_send_client,
-	.log = rmnet_ctl_log,
-};
-
-struct rmnet_ctl_client_if *rmnet_ctl_if(void)
-{
-	return &client_if;
-}
-EXPORT_SYMBOL(rmnet_ctl_if);

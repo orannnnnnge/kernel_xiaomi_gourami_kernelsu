@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /* Copyright (c) 2013-2020, The Linux Foundation. All rights reserved.
  *
  * RMNET Data MAP protocol
@@ -834,23 +835,22 @@ __rmnet_map_segment_coal_skb(struct sk_buff *coal_skb,
 	struct rmnet_priv *priv = netdev_priv(coal_skb->dev);
 	__sum16 *check = NULL;
 	u32 alloc_len;
-	u32 dlen = coal_meta->data_len * coal_meta->pkt_count;
-	u32 hlen = coal_meta->ip_len + coal_meta->trans_len;
 	bool zero_csum = false;
 
 	/* We can avoid copying the data if the SKB we got from the lower-level
 	 * drivers was nonlinear.
 	 */
 	if (skb_is_nonlinear(coal_skb))
-		alloc_len = hlen;
+		alloc_len = coal_meta->ip_len + coal_meta->trans_len;
 	else
-		alloc_len = hlen + dlen;
+		alloc_len = coal_meta->ip_len + coal_meta->trans_len +
+			    (coal_meta->data_len * coal_meta->pkt_count);
 
 	skbn = alloc_skb(alloc_len, GFP_ATOMIC);
 	if (!skbn)
 		return;
 
-	skb_reserve(skbn, hlen);
+	skb_reserve(skbn, coal_meta->ip_len + coal_meta->trans_len);
 	rmnet_map_nonlinear_copy(coal_skb, coal_meta, skbn);
 
 	/* Push transport header and update necessary fields */
@@ -862,17 +862,6 @@ __rmnet_map_segment_coal_skb(struct sk_buff *coal_skb,
 
 		th->seq = htonl(ntohl(th->seq) + coal_meta->data_offset);
 		check = &th->check;
-
-		/* Don't allow dangerous flags to be set in any segment but the
-		 * last one.
-		 */
-		if (th->fin || th->psh) {
-			if (hlen + coal_meta->data_offset + dlen <
-			    coal_skb->len) {
-				th->fin = 0;
-				th->psh = 0;
-			}
-		}
 	} else if (coal_meta->trans_proto == IPPROTO_UDP) {
 		struct udphdr *uh = udp_hdr(skbn);
 
@@ -948,7 +937,7 @@ __rmnet_map_segment_coal_skb(struct sk_buff *coal_skb,
 	__skb_queue_tail(list, skbn);
 
 	/* Update meta information to move past the data we just segmented */
-	coal_meta->data_offset += dlen;
+	coal_meta->data_offset += coal_meta->data_len * coal_meta->pkt_count;
 	coal_meta->pkt_id = pkt_id + 1;
 	coal_meta->pkt_count = 0;
 }
@@ -1274,9 +1263,7 @@ int rmnet_map_process_next_hdr_packet(struct sk_buff *skb,
 			consume_skb(skb);
 		break;
 	case RMNET_MAP_HEADER_TYPE_CSUM_OFFLOAD:
-		if (unlikely(!(skb->dev->features & NETIF_F_RXCSUM))) {
-			priv->stats.csum_sw++;
-		} else if (rmnet_map_get_csum_valid(skb)) {
+		if (rmnet_map_get_csum_valid(skb)) {
 			priv->stats.csum_ok++;
 			skb->ip_summed = CHECKSUM_UNNECESSARY;
 		} else {
@@ -1351,7 +1338,7 @@ static void rmnet_map_flush_tx_packet_work(struct work_struct *work)
 			skb = port->agg_skb;
 			port->agg_skb = NULL;
 			port->agg_count = 0;
-			memset(&port->agg_time, 0, sizeof(port->agg_time));
+			memset(&port->agg_time, 0, sizeof(struct timespec));
 		}
 		port->agg_state = 0;
 	}
@@ -1526,7 +1513,7 @@ static void rmnet_map_send_agg_skb(struct rmnet_port *port, unsigned long flags)
 	/* Reset the aggregation state */
 	port->agg_skb = NULL;
 	port->agg_count = 0;
-	memset(&port->agg_time, 0, sizeof(port->agg_time));
+	memset(&port->agg_time, 0, sizeof(struct timespec));
 	port->agg_state = 0;
 	spin_unlock_irqrestore(&port->agg_lock, flags);
 	hrtimer_cancel(&port->hrtimer);
@@ -1535,14 +1522,14 @@ static void rmnet_map_send_agg_skb(struct rmnet_port *port, unsigned long flags)
 
 void rmnet_map_tx_aggregate(struct sk_buff *skb, struct rmnet_port *port)
 {
-	struct timespec64 diff, last;
+	struct timespec diff, last;
 	int size;
 	unsigned long flags;
 
 new_packet:
 	spin_lock_irqsave(&port->agg_lock, flags);
-	memcpy(&last, &port->agg_last, sizeof(last));
-	ktime_get_real_ts64(&port->agg_last);
+	memcpy(&last, &port->agg_last, sizeof(struct timespec));
+	getnstimeofday(&port->agg_last);
 
 	if ((port->data_format & RMNET_EGRESS_FORMAT_PRIORITY) &&
 	    skb->priority) {
@@ -1558,7 +1545,7 @@ new_packet:
 		/* Check to see if we should agg first. If the traffic is very
 		 * sparse, don't aggregate. We will need to tune this later
 		 */
-		diff = timespec64_sub(port->agg_last, last);
+		diff = timespec_sub(port->agg_last, last);
 		size = port->egress_agg_params.agg_size - skb->len;
 
 		if (diff.tv_sec > 0 || diff.tv_nsec > rmnet_agg_bypass_time ||
@@ -1573,23 +1560,22 @@ new_packet:
 		if (!port->agg_skb) {
 			port->agg_skb = 0;
 			port->agg_count = 0;
-			memset(&port->agg_time, 0, sizeof(port->agg_time));
+			memset(&port->agg_time, 0, sizeof(struct timespec));
 			spin_unlock_irqrestore(&port->agg_lock, flags);
 			skb->protocol = htons(ETH_P_MAP);
 			dev_queue_xmit(skb);
 			return;
 		}
-
 		rmnet_map_linearize_copy(port->agg_skb, skb);
 		port->agg_skb->dev = skb->dev;
 		port->agg_skb->protocol = htons(ETH_P_MAP);
 		port->agg_count = 1;
-		ktime_get_real_ts64(&port->agg_time);
+		getnstimeofday(&port->agg_time);
 		dev_kfree_skb_any(skb);
 		goto schedule;
 	}
-	diff = timespec64_sub(port->agg_last, port->agg_time);
-	size = skb_tailroom(port->agg_skb);
+	diff = timespec_sub(port->agg_last, port->agg_time);
+	size = port->egress_agg_params.agg_size - port->agg_skb->len;
 
 	if (skb->len > size ||
 	    port->agg_count >= port->egress_agg_params.agg_count ||
@@ -1674,7 +1660,7 @@ void rmnet_map_tx_aggregate_exit(struct rmnet_port *port)
 			kfree_skb(port->agg_skb);
 			port->agg_skb = NULL;
 			port->agg_count = 0;
-			memset(&port->agg_time, 0, sizeof(port->agg_time));
+			memset(&port->agg_time, 0, sizeof(struct timespec));
 		}
 
 		port->agg_state = 0;
@@ -1698,7 +1684,7 @@ void rmnet_map_tx_qmap_cmd(struct sk_buff *qmap_skb)
 			agg_skb = port->agg_skb;
 			port->agg_skb = 0;
 			port->agg_count = 0;
-			memset(&port->agg_time, 0, sizeof(port->agg_time));
+			memset(&port->agg_time, 0, sizeof(struct timespec));
 			port->agg_state = 0;
 			spin_unlock_irqrestore(&port->agg_lock, flags);
 			hrtimer_cancel(&port->hrtimer);

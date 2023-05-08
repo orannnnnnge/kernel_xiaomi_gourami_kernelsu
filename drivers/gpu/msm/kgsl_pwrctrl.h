@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Copyright (c) 2010-2021, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 #ifndef __KGSL_PWRCTRL_H
 #define __KGSL_PWRCTRL_H
@@ -160,6 +161,7 @@ struct gpu_cx_ipeak_client {
  * @limits_lock - spin lock to protect limits list
  * @sysfs_pwr_limit - pointer to the sysfs limits node
  * @cx_ipeak_pwr_limit - pointer to the cx_ipeak limits node
+ * @cooling_pwr_limit - pointer to the cooling framework limits node
  * isense_clk_indx - index of isense clock, 0 if no isense
  * isense_clk_on_level - isense clock rate is XO rate below this level.
  * gpu_cx_ipeak_client - CX Ipeak clients used by GPU
@@ -200,7 +202,6 @@ struct kgsl_pwrctrl {
 	unsigned int bus_percent_ab;
 	unsigned int bus_width;
 	unsigned long bus_ab_mbytes;
-	unsigned long ddr_stall_percent;
 	struct device *devbw;
 	unsigned int bus_index[KGSL_MAX_PWRLEVELS];
 	uint64_t *bus_ib;
@@ -215,6 +216,7 @@ struct kgsl_pwrctrl {
 	spinlock_t limits_lock;
 	struct kgsl_pwr_limit *sysfs_pwr_limit;
 	struct kgsl_pwr_limit *cx_ipeak_pwr_limit;
+	struct kgsl_pwr_limit *cooling_pwr_limit;
 	unsigned int gpu_bimc_int_clk_freq;
 	bool gpu_bimc_interface_enabled;
 	struct gpu_cx_ipeak_client gpu_ipeak_client[2];

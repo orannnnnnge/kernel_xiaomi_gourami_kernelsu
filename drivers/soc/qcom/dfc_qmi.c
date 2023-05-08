@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- * Copyright (c) 2018-2021, The Linux Foundation. All rights reserved.
- * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
+ * Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <net/pkt_sched.h>
@@ -915,18 +916,12 @@ int dfc_bearer_flow_ctl(struct net_device *dev,
 
 	enable = bearer->grant_size ? true : false;
 
-	/* Do not flow disable tcp ack q in tcp bidir
-	 * ACK queue opened first to drain ACKs faster
-	 * Although since tcp ancillary is true most of the time,
-	 * this shouldn't really make a difference
-	 * If there is non zero grant but tcp ancillary is false,
-	 * send out ACKs anyway
-	 */
-	if (bearer->ack_mq_idx != INVALID_MQ)
-		qmi_rmnet_flow_control(dev, bearer->ack_mq_idx,
-				       enable || bearer->tcp_bidir);
-
 	qmi_rmnet_flow_control(dev, bearer->mq_idx, enable);
+
+	/* Do not flow disable tcp ack q in tcp bidir */
+	if (bearer->ack_mq_idx != INVALID_MQ &&
+	    (enable || !bearer->tcp_bidir))
+		qmi_rmnet_flow_control(dev, bearer->ack_mq_idx, enable);
 
 	if (!enable && bearer->ack_req)
 		dfc_send_ack(dev, bearer->bearer_id,
@@ -1022,12 +1017,8 @@ static int dfc_update_fc_map(struct net_device *dev, struct qos_info *qos,
 			itm->bytes_in_flight = 0;
 		}
 
-		/* update queue state only if there is a change in grant
-		 * or change in ancillary tcp state
-		 */
 		if ((itm->grant_size == 0 && adjusted_grant > 0) ||
-		    (itm->grant_size > 0 && adjusted_grant == 0) ||
-		    (itm->tcp_bidir ^ DFC_IS_TCP_BIDIR(ancillary)))
+		    (itm->grant_size > 0 && adjusted_grant == 0))
 			action = true;
 
 		/* This is needed by qmap */
@@ -1113,9 +1104,18 @@ void dfc_do_burst_flow_control(struct dfc_qmi_data *dfc,
 
 		spin_lock_bh(&qos->qos_lock);
 
+		/* In powersave, change grant to 1 if it is a enable */
 		if (qmi_rmnet_ignore_grant(dfc->rmnet_port)) {
-			spin_unlock_bh(&qos->qos_lock);
-			continue;
+			if (flow_status->num_bytes) {
+				flow_status->num_bytes = DEFAULT_GRANT;
+				flow_status->seq_num = 0;
+				/* below is to reset bytes-in-flight */
+				flow_status->rx_bytes_valid = 1;
+				flow_status->rx_bytes = 0xFFFFFFFF;
+			} else {
+				spin_unlock_bh(&qos->qos_lock);
+				continue;
+			}
 		}
 
 		if (unlikely(flow_status->bearer_id == 0xFF))
@@ -1488,10 +1488,16 @@ void dfc_qmi_burst_check(struct net_device *dev, struct qos_info *qos,
 
 	spin_lock_bh(&qos->qos_lock);
 
-	/* Mark is flow_id */
-	itm = qmi_rmnet_get_flow_map(qos, mark, ip_type);
-	if (likely(itm))
-		bearer = itm->bearer;
+	if (dfc_mode == DFC_MODE_MQ_NUM) {
+		/* Mark is mq num */
+		if (likely(mark < MAX_MQ_NUM))
+			bearer = qos->mq[mark].bearer;
+	} else {
+		/* Mark is flow_id */
+		itm = qmi_rmnet_get_flow_map(qos, mark, ip_type);
+		if (likely(itm))
+			bearer = itm->bearer;
+	}
 
 	if (unlikely(!bearer))
 		goto out;

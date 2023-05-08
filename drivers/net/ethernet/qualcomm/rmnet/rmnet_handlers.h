@@ -1,4 +1,5 @@
-/* Copyright (c) 2013, 2016-2017, 2019-2020, The Linux Foundation. All rights reserved.
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2013, 2016-2019 The Linux Foundation. All rights reserved.
  *
  * RMNET Data ingress/egress handler
  *

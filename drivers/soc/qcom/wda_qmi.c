@@ -1,4 +1,6 @@
-/* Copyright (c) 2018-2020, The Linux Foundation. All rights reserved.
+// SPDX-License-Identifier: GPL-2.0-only
+/*
+ * Copyright (c) 2018-2019, The Linux Foundation. All rights reserved.
  */
 
 #include <linux/rtnetlink.h>
@@ -450,6 +452,7 @@ void wda_qmi_client_exit(void *wda_data)
 
 	data->restart_state = 1;
 	trace_wda_client_state_down(0);
+	qmi_handle_release(&data->handle);
 	destroy_workqueue(data->wda_wq);
 	kfree(data);
 }
@@ -458,11 +461,4 @@ int wda_set_powersave_mode(void *wda_data, uint8_t enable)
 {
 	trace_wda_set_powersave_mode(enable);
 	return wda_set_powersave_mode_req(wda_data, enable);
-}
-
-void wda_qmi_client_release(void *wda_data)
-{
-	if (!wda_data)
-		return;
-	qmi_handle_release(&((struct wda_qmi_data *)wda_data)->handle);
 }

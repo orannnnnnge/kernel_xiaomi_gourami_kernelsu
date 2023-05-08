@@ -2971,7 +2971,7 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		gsi->d_port.in_aggr_size = GSI_IN_MBIM_AGGR_SIZE;
 		info.in_req_buf_len = GSI_IN_MBIM_AGGR_SIZE;
 		info.in_req_num_buf = GSI_NUM_IN_BUFFERS;
-		gsi->d_port.out_aggr_size = GSI_OUT_AGGR_SIZE;
+		gsi->d_port.out_aggr_size = GSI_OUT_MBIM_AGGR_SIZE;
 		info.out_req_buf_len = GSI_OUT_MBIM_BUF_LEN;
 		info.out_req_num_buf = GSI_NUM_OUT_BUFFERS;
 		info.notify_buf_len = sizeof(struct usb_cdc_notification);
@@ -3078,8 +3078,8 @@ static int gsi_bind(struct usb_configuration *c, struct usb_function *f)
 		info.ss_desc_hdr = qdss_gsi_ss_data_only_desc;
 		info.in_epname = "gsi-epin";
 		info.out_epname = "";
-		info.in_req_buf_len = 16384;
-		info.in_req_num_buf = GSI_NUM_IN_BUFFERS;
+		info.in_req_buf_len = GSI_IN_DPL_BUFF_SIZE;
+		info.in_req_num_buf = GSI_NUM_IN_DPL_BUFFERS;
 		info.notify_buf_len = sizeof(struct usb_cdc_notification);
 		break;
 	default:

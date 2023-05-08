@@ -94,8 +94,22 @@ rmnet_map_dl_hdr_notify_v2(struct rmnet_port *port,
 {
 	struct rmnet_map_dl_ind *tmp;
 
+	port->dl_marker_flush = 0;
+
 	list_for_each_entry(tmp, &port->dl_list, list)
 		tmp->dl_hdr_handler_v2(dlhdr, qcmd);
+}
+
+void
+rmnet_map_dl_hdr_notify(struct rmnet_port *port,
+			struct rmnet_map_dl_ind_hdr *dlhdr)
+{
+	struct rmnet_map_dl_ind *tmp;
+
+	port->dl_marker_flush = 0;
+
+	list_for_each_entry(tmp, &port->dl_list, list)
+		tmp->dl_hdr_handler(dlhdr);
 }
 
 void
@@ -104,9 +118,35 @@ rmnet_map_dl_trl_notify_v2(struct rmnet_port *port,
 			   struct rmnet_map_control_command_header *qcmd)
 {
 	struct rmnet_map_dl_ind *tmp;
+	struct napi_struct *napi;
 
 	list_for_each_entry(tmp, &port->dl_list, list)
 		tmp->dl_trl_handler_v2(dltrl, qcmd);
+
+	if (port->dl_marker_flush) {
+		napi = get_current_napi_context();
+		napi_gro_flush(napi, false);
+	}
+
+	port->dl_marker_flush = -1;
+}
+
+void
+rmnet_map_dl_trl_notify(struct rmnet_port *port,
+			struct rmnet_map_dl_ind_trl *dltrl)
+{
+	struct rmnet_map_dl_ind *tmp;
+	struct napi_struct *napi;
+
+	list_for_each_entry(tmp, &port->dl_list, list)
+		tmp->dl_trl_handler(dltrl);
+
+	if (port->dl_marker_flush) {
+		napi = get_current_napi_context();
+		napi_gro_flush(napi, false);
+	}
+
+	port->dl_marker_flush = -1;
 }
 
 static void rmnet_map_process_flow_start(struct sk_buff *skb,
@@ -131,6 +171,8 @@ static void rmnet_map_process_flow_start(struct sk_buff *skb,
 		port->stats.dl_hdr_last_qmap_vers = qcmd->reserved;
 		port->stats.dl_hdr_last_trans_id = qcmd->transaction_id;
 		pskb_pull(skb, sizeof(struct rmnet_map_control_command_header));
+	} else {
+		pskb_pull(skb, RMNET_MAP_CMD_SIZE);
 	}
 
 	dlhdr = (struct rmnet_map_dl_ind_hdr *)rmnet_map_data_ptr(skb);
@@ -145,6 +187,8 @@ static void rmnet_map_process_flow_start(struct sk_buff *skb,
 
 	if (is_dl_mark_v2)
 		rmnet_map_dl_hdr_notify_v2(port, dlhdr, qcmd);
+	else
+		rmnet_map_dl_hdr_notify(port, dlhdr);
 
 	if (rmnet_perf) {
 		unsigned int pull_size;
@@ -175,6 +219,8 @@ static void rmnet_map_process_flow_end(struct sk_buff *skb,
 		qcmd = (struct rmnet_map_control_command_header *)
 			rmnet_map_data_ptr(skb);
 		pskb_pull(skb, sizeof(struct rmnet_map_control_command_header));
+	} else {
+		pskb_pull(skb, RMNET_MAP_CMD_SIZE);
 	}
 
 	dltrl = (struct rmnet_map_dl_ind_trl *)rmnet_map_data_ptr(skb);
@@ -184,6 +230,8 @@ static void rmnet_map_process_flow_end(struct sk_buff *skb,
 
 	if (is_dl_mark_v2)
 		rmnet_map_dl_trl_notify_v2(port, dltrl, qcmd);
+	else
+		rmnet_map_dl_trl_notify(port, dltrl);
 
 	if (rmnet_perf) {
 		unsigned int pull_size;
@@ -266,6 +314,8 @@ void rmnet_map_cmd_exit(struct rmnet_port *port)
 void rmnet_map_cmd_init(struct rmnet_port *port)
 {
 	INIT_LIST_HEAD(&port->dl_list);
+
+	port->dl_marker_flush = -1;
 }
 
 int rmnet_map_dl_ind_register(struct rmnet_port *port,
@@ -274,8 +324,8 @@ int rmnet_map_dl_ind_register(struct rmnet_port *port,
 	struct rmnet_map_dl_ind *dl_ind_iterator;
 	bool empty_ind_list = true;
 
-	if (!port || !dl_ind || !dl_ind->dl_hdr_handler_v2 ||
-	    !dl_ind->dl_trl_handler_v2)
+	if (!port || !dl_ind || !dl_ind->dl_hdr_handler ||
+	    !dl_ind->dl_trl_handler)
 		return -EINVAL;
 
 	list_for_each_entry_rcu(dl_ind_iterator, &port->dl_list, list) {

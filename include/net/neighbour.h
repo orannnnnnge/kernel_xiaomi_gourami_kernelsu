@@ -154,6 +154,7 @@ struct neighbour {
 	struct hh_cache		hh;
 	int			(*output)(struct neighbour *, struct sk_buff *);
 	const struct neigh_ops	*ops;
+	struct list_head	gc_list;
 	struct rcu_head		rcu;
 	struct net_device	*dev;
 	u8			primary_key[0];
@@ -202,6 +203,7 @@ struct neigh_table {
 	int			(*pconstructor)(struct pneigh_entry *);
 	void			(*pdestructor)(struct pneigh_entry *);
 	void			(*proxy_redo)(struct sk_buff *skb);
+	int			(*is_multicast)(const void *pkey);
 	char			*id;
 	struct neigh_parms	parms;
 	struct list_head	parms_list;
@@ -214,6 +216,8 @@ struct neigh_table {
 	struct timer_list 	proxy_timer;
 	struct sk_buff_head	proxy_queue;
 	atomic_t		entries;
+	atomic_t		gc_entries;
+	struct list_head	gc_list;
 	rwlock_t		lock;
 	unsigned long		last_rand;
 	struct neigh_statistics	__percpu *stats;
@@ -543,23 +547,5 @@ static inline void neigh_ha_snapshot(char *dst, const struct neighbour *n,
 		seq = read_seqbegin(&n->ha_lock);
 		memcpy(dst, n->ha, dev->addr_len);
 	} while (read_seqretry(&n->ha_lock, seq));
-}
-
-static inline void neigh_update_ext_learned(struct neighbour *neigh, u32 flags,
-					    int *notify)
-{
-	u8 ndm_flags = 0;
-
-	if (!(flags & NEIGH_UPDATE_F_ADMIN))
-		return;
-
-	ndm_flags |= (flags & NEIGH_UPDATE_F_EXT_LEARNED) ? NTF_EXT_LEARNED : 0;
-	if ((neigh->flags ^ ndm_flags) & NTF_EXT_LEARNED) {
-		if (ndm_flags & NTF_EXT_LEARNED)
-			neigh->flags |= NTF_EXT_LEARNED;
-		else
-			neigh->flags &= ~NTF_EXT_LEARNED;
-		*notify = 1;
-	}
 }
 #endif

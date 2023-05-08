@@ -441,8 +441,8 @@ static unsigned long __munlock_pagevec_fill(struct pagevec *pvec,
  * and re-mlocked by try_to_{munlock|unmap} before we unmap and
  * free them.  This will result in freeing mlocked pages.
  */
-static void munlock_vma_pages_range(struct vm_area_struct *vma,
-				    unsigned long start, unsigned long end)
+void munlock_vma_pages_range(struct vm_area_struct *vma,
+			     unsigned long start, unsigned long end)
 {
 	vma->vm_flags &= VM_LOCKED_CLEAR_MASK;
 

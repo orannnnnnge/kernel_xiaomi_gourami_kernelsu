@@ -58,7 +58,7 @@ static ssize_t min_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	err = kstrtoul(buf, 0, &min);
 	if (err)
-		return -EINVAL;
+		return err;
 
 	range->min = min;
 	return count;
@@ -83,7 +83,7 @@ static ssize_t max_store(struct kobject *kobj, struct kobj_attribute *attr,
 
 	err = kstrtoul(buf, 0, &max);
 	if (err)
-		return -EINVAL;
+		return err;
 
 	range->max = max;
 	return count;
@@ -291,9 +291,7 @@ static ssize_t interval_us_store(struct kobject *kobj,
 			struct damon_sysfs_watermarks, kobj);
 	int err = kstrtoul(buf, 0, &watermarks->interval_us);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static ssize_t high_show(struct kobject *kobj,
@@ -312,9 +310,7 @@ static ssize_t high_store(struct kobject *kobj,
 			struct damon_sysfs_watermarks, kobj);
 	int err = kstrtoul(buf, 0, &watermarks->high);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static ssize_t mid_show(struct kobject *kobj,
@@ -333,9 +329,7 @@ static ssize_t mid_store(struct kobject *kobj,
 			struct damon_sysfs_watermarks, kobj);
 	int err = kstrtoul(buf, 0, &watermarks->mid);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static ssize_t low_show(struct kobject *kobj,
@@ -354,9 +348,7 @@ static ssize_t low_store(struct kobject *kobj,
 			struct damon_sysfs_watermarks, kobj);
 	int err = kstrtoul(buf, 0, &watermarks->low);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static void damon_sysfs_watermarks_release(struct kobject *kobj)
@@ -437,9 +429,7 @@ static ssize_t sz_permil_store(struct kobject *kobj,
 			struct damon_sysfs_weights, kobj);
 	int err = kstrtouint(buf, 0, &weights->sz);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static ssize_t nr_accesses_permil_show(struct kobject *kobj,
@@ -458,9 +448,7 @@ static ssize_t nr_accesses_permil_store(struct kobject *kobj,
 			struct damon_sysfs_weights, kobj);
 	int err = kstrtouint(buf, 0, &weights->nr_accesses);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static ssize_t age_permil_show(struct kobject *kobj,
@@ -479,9 +467,7 @@ static ssize_t age_permil_store(struct kobject *kobj,
 			struct damon_sysfs_weights, kobj);
 	int err = kstrtouint(buf, 0, &weights->age);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static void damon_sysfs_weights_release(struct kobject *kobj)
@@ -1111,9 +1097,7 @@ static ssize_t start_store(struct kobject *kobj, struct kobj_attribute *attr,
 			struct damon_sysfs_region, kobj);
 	int err = kstrtoul(buf, 0, &region->start);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static ssize_t end_show(struct kobject *kobj, struct kobj_attribute *attr,
@@ -1132,9 +1116,7 @@ static ssize_t end_store(struct kobject *kobj, struct kobj_attribute *attr,
 			struct damon_sysfs_region, kobj);
 	int err = kstrtoul(buf, 0, &region->end);
 
-	if (err)
-		return -EINVAL;
-	return count;
+	return err ? err : count;
 }
 
 static void damon_sysfs_region_release(struct kobject *kobj)
@@ -1528,7 +1510,7 @@ static ssize_t sample_us_store(struct kobject *kobj,
 	int err = kstrtoul(buf, 0, &us);
 
 	if (err)
-		return -EINVAL;
+		return err;
 
 	intervals->sample_us = us;
 	return count;
@@ -1552,7 +1534,7 @@ static ssize_t aggr_us_store(struct kobject *kobj, struct kobj_attribute *attr,
 	int err = kstrtoul(buf, 0, &us);
 
 	if (err)
-		return -EINVAL;
+		return err;
 
 	intervals->aggr_us = us;
 	return count;
@@ -1576,7 +1558,7 @@ static ssize_t update_us_store(struct kobject *kobj,
 	int err = kstrtoul(buf, 0, &us);
 
 	if (err)
-		return -EINVAL;
+		return err;
 
 	intervals->update_us = us;
 	return count;
@@ -2130,18 +2112,23 @@ static int damon_sysfs_set_attrs(struct damon_ctx *ctx,
 	struct damon_sysfs_intervals *sys_intervals = sys_attrs->intervals;
 	struct damon_sysfs_ul_range *sys_nr_regions =
 		sys_attrs->nr_regions_range;
-
-	return damon_set_attrs(ctx, sys_intervals->sample_us,
-			sys_intervals->aggr_us, sys_intervals->update_us,
-			sys_nr_regions->min, sys_nr_regions->max);
+	struct damon_attrs attrs = {
+		.sample_interval = sys_intervals->sample_us,
+		.aggr_interval = sys_intervals->aggr_us,
+		.ops_update_interval = sys_intervals->update_us,
+		.min_nr_regions = sys_nr_regions->min,
+		.max_nr_regions = sys_nr_regions->max,
+	};
+	return damon_set_attrs(ctx, &attrs);
 }
 
 static void damon_sysfs_destroy_targets(struct damon_ctx *ctx)
 {
 	struct damon_target *t, *next;
+	bool has_pid = damon_target_has_pid(ctx);
 
 	damon_for_each_target_safe(t, next, ctx) {
-		if (damon_target_has_pid(ctx))
+		if (has_pid)
 			put_pid(t->pid);
 		damon_destroy_target(t);
 	}
@@ -2588,19 +2575,16 @@ static ssize_t pid_show(struct kobject *kobj,
 	struct damon_sysfs_kdamond *kdamond = container_of(kobj,
 			struct damon_sysfs_kdamond, kobj);
 	struct damon_ctx *ctx;
-	int pid;
+	int pid = -1;
 
 	if (!mutex_trylock(&damon_sysfs_lock))
 		return -EBUSY;
 	ctx = kdamond->damon_ctx;
-	if (!ctx) {
-		pid = -1;
+	if (!ctx)
 		goto out;
-	}
+
 	mutex_lock(&ctx->kdamond_lock);
-	if (!ctx->kdamond)
-		pid = -1;
-	else
+	if (ctx->kdamond)
 		pid = ctx->kdamond->pid;
 	mutex_unlock(&ctx->kdamond_lock);
 out:

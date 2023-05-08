@@ -12,7 +12,7 @@
 
 unsigned int pmu_poll_time_ms = 10;
 bool pmu_poll_enabled;
-extern void pmu_poll_enable(void);
+extern int pmu_poll_enable(void);
 extern void pmu_poll_disable(void);
 static struct mutex sysfs_mutex;
 static bool sysfs_node_created;
@@ -55,17 +55,18 @@ static ssize_t pmu_poll_enable_store(struct kobject *kobj,
 					const char *buf, size_t count)
 {
 	bool enable;
+	int ret = 0;
 
 	if (kstrtobool(buf, &enable))
 		return -EINVAL;
 
-	if (pmu_poll_enabled == enable)
-		return count;
-
 	if (enable)
-		pmu_poll_enable();
+		ret = pmu_poll_enable();
 	else
 		pmu_poll_disable();
+
+	if (ret)
+		return ret;
 
 	return count;
 }

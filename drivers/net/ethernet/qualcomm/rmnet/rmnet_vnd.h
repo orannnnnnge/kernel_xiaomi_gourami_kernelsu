@@ -1,4 +1,5 @@
-/* Copyright (c) 2013-2018, 2020 The Linux Foundation. All rights reserved.
+/* SPDX-License-Identifier: GPL-2.0 */
+/* Copyright (c) 2013-2018, The Linux Foundation. All rights reserved.
  *
  * RMNET Data Virtual Network Device APIs
  *
@@ -18,5 +19,4 @@ void rmnet_vnd_rx_fixup(struct net_device *dev, u32 skb_len);
 void rmnet_vnd_tx_fixup(struct net_device *dev, u32 skb_len);
 u8 rmnet_vnd_get_mux(struct net_device *rmnet_dev);
 void rmnet_vnd_setup(struct net_device *dev);
-void rmnet_vnd_reset_mac_addr(struct net_device *dev);
 #endif /* _RMNET_VND_H_ */

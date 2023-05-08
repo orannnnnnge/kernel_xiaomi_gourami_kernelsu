@@ -17,6 +17,12 @@
 };
 
 /* Display */
+&display_panel_vci {
+	qcom,init-voltage = <3025000>;
+	regulator-min-microvolt = <3025000>;
+	regulator-max-microvolt = <3025000>;
+};
+
 &pm8150a_amoled {
 	status = "ok";
 };

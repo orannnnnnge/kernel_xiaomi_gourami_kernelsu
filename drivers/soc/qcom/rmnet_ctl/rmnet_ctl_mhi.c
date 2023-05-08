@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* Copyright (c) 2019-2020, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2019, The Linux Foundation. All rights reserved.
  *
  * RMNET_CTL mhi handler
  *
@@ -199,24 +199,8 @@ static struct mhi_driver rmnet_ctl_driver = {
 	},
 };
 
-static int __init rmnet_ctl_init(void)
-{
-	int rc;
+module_driver(rmnet_ctl_driver,
+	      mhi_driver_register, mhi_driver_unregister);
 
-	rc = mhi_driver_register(&rmnet_ctl_driver);
-	rmnet_ctl_set_dbgfs(true);
-
-	return rc;
-}
-
-static void __exit rmnet_ctl_exit(void)
-{
-	mhi_driver_unregister(&rmnet_ctl_driver);
-	rmnet_ctl_set_dbgfs(false);
-}
-
-module_init(rmnet_ctl_init)
-module_exit(rmnet_ctl_exit)
-
-MODULE_DESCRIPTION("RmNet Control MHI Driver");
+MODULE_DESCRIPTION("RmNet Control Driver");
 MODULE_LICENSE("GPL v2");
