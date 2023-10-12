@@ -565,7 +565,7 @@ bool __oom_reap_task_mm(struct mm_struct *mm)
 	set_bit(MMF_UNSTABLE, &mm->flags);
 
 	for (vma = mm->mmap ; vma; vma = vma->vm_next) {
-		if (!can_madv_lru_vma(vma))
+		if (!can_madv_dontneed_vma(vma))
 			continue;
 
 		/*
@@ -1246,12 +1246,6 @@ SYSCALL_DEFINE2(process_mrelease, int, pidfd, unsigned int, flags)
 
 	mm = p->mm;
 	mmgrab(mm);
-
-	/*
-	 * If we are too late and exit_mmap already checked mm_is_oom_victim
-	 * then will block on mmap_read_lock until exit_mmap releases mmap_lock
-	 */
-	set_bit(MMF_OOM_VICTIM, &mm->flags);
 
 	if (task_will_free_mem(p))
 		reap = true;

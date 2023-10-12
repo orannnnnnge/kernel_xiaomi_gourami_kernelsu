@@ -127,7 +127,8 @@ struct fib_table *fib_get_table(struct net *net, u32 id)
 	h = id & (FIB_TABLE_HASHSZ - 1);
 
 	head = &net->ipv4.fib_table_hash[h];
-	hlist_for_each_entry_rcu(tb, head, tb_hlist) {
+	hlist_for_each_entry_rcu(tb, head, tb_hlist,
+				 lockdep_rtnl_is_held()) {
 		if (tb->tb_id == id)
 			return tb;
 	}
@@ -556,6 +557,9 @@ static int rtentry_to_fib_config(struct net *net, int cmd, struct rtentry *rt,
 		    addr_type == RTN_UNICAST)
 			cfg->fc_scope = RT_SCOPE_UNIVERSE;
 	}
+
+	if (!cfg->fc_table)
+		cfg->fc_table = RT_TABLE_MAIN;
 
 	if (cmd == SIOCDELRT)
 		return 0;

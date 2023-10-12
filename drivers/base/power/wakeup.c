@@ -2,7 +2,6 @@
  * drivers/base/power/wakeup.c - System wakeup events framework
  *
  * Copyright (c) 2010 Rafael J. Wysocki <rjw@sisk.pl>, Novell Inc.
- * Copyright (C) 2021 XiaoMi, Inc.
  *
  * This file is released under the GPLv2.
  */
@@ -20,7 +19,10 @@
 #include <linux/irqdesc.h>
 #include <linux/wakeup_reason.h>
 #include <trace/events/power.h>
+#include <linux/irq.h>
 #include <linux/interrupt.h>
+#include <linux/irqdesc.h>
+#include <linux/wakeup_reason.h>
 
 #include "power.h"
 
@@ -122,7 +124,6 @@ static void wakeup_source_record(struct wakeup_source *ws)
 	unsigned long flags;
 
 	spin_lock_irqsave(&deleted_ws.lock, flags);
-	printk("the delete ws is %s\n", ws->name);
 	if (ws->event_count) {
 		deleted_ws.total_time =
 			ktime_add(deleted_ws.total_time, ws->total_time);
@@ -902,6 +903,7 @@ bool pm_wakeup_pending(void)
 	raw_spin_unlock_irqrestore(&events_lock, flags);
 
 	if (ret) {
+		pr_info("PM: Wakeup pending, aborting suspend\n");
 		pm_get_active_wakeup_sources(suspend_abort,
 					     MAX_SUSPEND_ABORT_LEN);
 		log_suspend_abort_reason(suspend_abort);
@@ -932,10 +934,10 @@ void pm_wakeup_clear(bool reset)
 
 void pm_system_irq_wakeup(unsigned int irq_number)
 {
-	struct irq_desc *desc;
-	const char *name = "null";
-
 	if (pm_wakeup_irq == 0) {
+		struct irq_desc *desc;
+		const char *name = "null";
+
 		if (msm_show_resume_irq_mask) {
 			desc = irq_to_desc(irq_number);
 			if (desc == NULL)

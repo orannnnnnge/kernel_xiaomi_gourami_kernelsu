@@ -233,82 +233,68 @@
 		wake-capable-sensor;
 		trips {
 			skin_light: skin-light {
-				temperature = <39000>;
+				temperature = <37000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
 			skin_moderate_pre_lv1: skin-moderate-pre-lv1 {
-				temperature = <41000>;
-				hysteresis = <1000>;
-				type = "passive";
-			};
-			skin_moderate_pre_lv2: skin-moderate-pre-lv2 {
 				temperature = <43000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
-			skin_moderate_pre_lv3: skin-moderate-pre-lv3 {
+			skin_moderate_pre_lv2: skin-moderate-pre-lv2 {
 				temperature = <45000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
-			skin_severe: skin-severe {
-				temperature = <51000>;
+			skin_moderate_pre_lv3: skin-moderate-pre-lv3 {
+				temperature = <46500>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
-			skin_critical: skin-critical {
-				temperature = <55000>;
+			skin_severe: skin-severe {
+				temperature = <52000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
 			skin_emergency_pre_lv1: skin-emergency-pre_lv1 {
-				temperature = <59000>;
+				temperature = <54000>;
 				hysteresis = <1000>;
 				type = "passive";
 			};
 			skin_backup_shutdown: skin-backup-shutdown {
-				temperature = <61000>;
+				temperature = <55000>;
 				hysteresis = <1000>;
 				type = "critical";
 			};
 		};
 		cooling-maps {
-			/* moderate pre level 3 throttling */
-			gpu-svs-l2 {
-				trip = <&skin_moderate_pre_lv3>;
-				cooling-device =
-					<&msm_gpu 1 1>;
-			};
-			/* severe throttling */
+			/* moderate pre level 2 throttling */
 			gpu-svs-l1 {
-				trip = <&skin_severe>;
+				trip = <&skin_moderate_pre_lv2>;
 				cooling-device =
 					<&msm_gpu 2 2>;
 			};
-			/* critical throttling */
+			/* moderate pre level 3 throttling */
 			gpu-svs-l0 {
-				trip = <&skin_critical>;
+				trip = <&skin_moderate_pre_lv3>;
 				cooling-device =
 					<&msm_gpu 3 3>;
 			};
-			cpu0-svs {
-				trip = <&skin_critical>;
+			/* severe throttling */
+			gpu-svs {
+				trip = <&skin_severe>;
 				cooling-device =
-					<&CPU0 5 5>;
+					<&msm_gpu 4 4>;
 			};
-			cpu4-svs {
-				trip = <&skin_critical>;
+			/* critical throttling */
+			gpu-low-svs-l1 {
+				trip = <&skin_severe>;
 				cooling-device =
-					<&CPU4 13 13>;
-			};
-			cpu7-svs {
-				trip = <&skin_critical>;
-				cooling-device =
-					<&CPU7 17 17>;
+					<&msm_gpu 5 5>;
 			};
 			/* emergency pre level 1 throttling */
-			gpu-svs {
+			gpu-low-svs {
 				trip = <&skin_emergency_pre_lv1>;
 				cooling-device =
 					<&msm_gpu THERMAL_MAX_LIMIT THERMAL_MAX_LIMIT>;

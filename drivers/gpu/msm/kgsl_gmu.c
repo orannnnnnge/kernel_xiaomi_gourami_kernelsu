@@ -8,6 +8,7 @@
 #include <linux/firmware.h>
 #include <linux/io.h>
 #include <linux/iommu.h>
+#include <linux/mailbox_client.h>
 #include <linux/msm-bus.h>
 #include <linux/of_platform.h>
 #include <linux/regulator/consumer.h>
@@ -1102,7 +1103,7 @@ static void gmu_aop_send_acd_state(struct kgsl_device *device, bool flag)
 	char msg_buf[33];
 	int ret;
 
-	if (IS_ERR_OR_NULL(gmu->mailbox.channel))
+	if (!gmu->mailbox.client)
 		return;
 
 	msg.len = scnprintf(msg_buf, sizeof(msg_buf),
@@ -1115,20 +1116,45 @@ static void gmu_aop_send_acd_state(struct kgsl_device *device, bool flag)
 				"AOP mbox send message failed: %d\n", ret);
 }
 
+static void gmu_aop_mailbox_destroy(struct kgsl_device *device)
+{
+	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
+	struct gmu_device *gmu = KGSL_GMU_DEVICE(device);
+	struct kgsl_mailbox *mailbox = &gmu->mailbox;
+
+	if (!mailbox->client)
+		return;
+
+	mbox_free_channel(mailbox->channel);
+	mailbox->channel = NULL;
+
+	kfree(mailbox->client);
+	mailbox->client = NULL;
+
+	clear_bit(ADRENO_ACD_CTRL, &adreno_dev->pwrctrl_flag);
+}
+
 static int gmu_aop_mailbox_init(struct kgsl_device *device,
 		struct gmu_device *gmu)
 {
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct kgsl_mailbox *mailbox = &gmu->mailbox;
 
-	mailbox->client.dev = &gmu->pdev->dev;
-	mailbox->client.tx_block = true;
-	mailbox->client.tx_tout = 1000;
-	mailbox->client.knows_txdone = false;
+	mailbox->client = kzalloc(sizeof(*mailbox->client), GFP_KERNEL);
+	if (!mailbox->client)
+		return -ENOMEM;
 
-	mailbox->channel = mbox_request_channel(&mailbox->client, 0);
-	if (IS_ERR(mailbox->channel))
+	mailbox->client->dev = &gmu->pdev->dev;
+	mailbox->client->tx_block = true;
+	mailbox->client->tx_tout = 1000;
+	mailbox->client->knows_txdone = false;
+
+	mailbox->channel = mbox_request_channel(mailbox->client, 0);
+	if (IS_ERR(mailbox->channel)) {
+		kfree(mailbox->client);
+		mailbox->client = NULL;
 		return PTR_ERR(mailbox->channel);
+	}
 
 	set_bit(ADRENO_ACD_CTRL, &adreno_dev->pwrctrl_flag);
 	return 0;
@@ -1139,7 +1165,7 @@ static int gmu_acd_set(struct kgsl_device *device, unsigned int val)
 	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct gmu_device *gmu = KGSL_GMU_DEVICE(device);
 
-	if (IS_ERR_OR_NULL(gmu->mailbox.channel))
+	if (!gmu->mailbox.client)
 		return -EINVAL;
 
 	/* Don't do any unneeded work if ACD is already in the correct state */
@@ -1586,7 +1612,7 @@ static int gmu_start(struct kgsl_device *device)
 
 		/* Vote for minimal DDR BW for GMU to init */
 		ret = msm_bus_scale_client_update_request(gmu->pcl,
-				pwr->pwrlevels[pwr->num_pwrlevels - 1].bus_min);
+				pwr->pwrlevels[pwr->default_pwrlevel].bus_min);
 		if (ret)
 			dev_err(&gmu->pdev->dev,
 				"Failed to allocate gmu b/w: %d\n", ret);
@@ -1715,7 +1741,6 @@ error:
 
 static void gmu_remove(struct kgsl_device *device)
 {
-	struct adreno_device *adreno_dev = ADRENO_DEVICE(device);
 	struct gmu_device *gmu = KGSL_GMU_DEVICE(device);
 	struct kgsl_hfi *hfi;
 	int i = 0;
@@ -1729,10 +1754,7 @@ static void gmu_remove(struct kgsl_device *device)
 
 	gmu_stop(device);
 
-	if (!IS_ERR_OR_NULL(gmu->mailbox.channel))
-		mbox_free_channel(gmu->mailbox.channel);
-
-	clear_bit(ADRENO_ACD_CTRL, &adreno_dev->pwrctrl_flag);
+	gmu_aop_mailbox_destroy(device);
 
 	while ((i < MAX_GMU_CLKS) && gmu->clks[i]) {
 		gmu->clks[i] = NULL;

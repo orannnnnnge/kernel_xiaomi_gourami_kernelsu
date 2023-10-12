@@ -34,7 +34,7 @@
 #include <linux/page_counter.h>
 #include <linux/memcontrol.h>
 #include <linux/cgroup.h>
-#include <linux/pagewalk.h>
+#include <linux/mm.h>
 #include <linux/sched/mm.h>
 #include <linux/shmem_fs.h>
 #include <linux/hugetlb.h>
@@ -1314,12 +1314,14 @@ void mem_cgroup_update_lru_size(struct lruvec *lruvec, enum lru_list lru,
 		*lru_size += nr_pages;
 
 	size = *lru_size;
+#ifndef CONFIG_LRU_GEN
 	if (WARN_ONCE(size < 0,
 		"%s(%p, %d, %d): lru_size %ld\n",
 		__func__, lruvec, lru, nr_pages, size)) {
 		VM_BUG_ON(1);
 		*lru_size = 0;
 	}
+#endif
 
 	if (nr_pages > 0)
 		*lru_size += nr_pages;
@@ -2701,6 +2703,7 @@ static void commit_charge(struct page *page, struct mem_cgroup *memcg,
 	 *
 	 * - a page cache insertion, a swapin fault, or a migration
 	 *   have the page locked
+	 * - mem_cgroup_trylock_pages()
 	 */
 	page->mem_cgroup = memcg;
 
@@ -3867,8 +3870,8 @@ static int memcg_stat_show(struct seq_file *m, void *v)
 		pg_data_t *pgdat;
 		struct mem_cgroup_per_node *mz;
 		struct zone_reclaim_stat *rstat;
-		unsigned long recent_rotated[2] = {0, 0};
-		unsigned long recent_scanned[2] = {0, 0};
+		unsigned long recent_rotated[ANON_AND_FILE] = {};
+		unsigned long recent_scanned[ANON_AND_FILE] = {};
 
 		for_each_online_pgdat(pgdat) {
 			mz = mem_cgroup_nodeinfo(memcg, pgdat->node_id);
@@ -5477,16 +5480,17 @@ static int mem_cgroup_count_precharge_pte_range(pmd_t *pmd,
 	return 0;
 }
 
-static const struct mm_walk_ops precharge_walk_ops = {
-	.pmd_entry	= mem_cgroup_count_precharge_pte_range,
-};
-
 static unsigned long mem_cgroup_count_precharge(struct mm_struct *mm)
 {
 	unsigned long precharge;
 
+	struct mm_walk mem_cgroup_count_precharge_walk = {
+		.pmd_entry = mem_cgroup_count_precharge_pte_range,
+		.mm = mm,
+	};
 	down_read(&mm->mmap_sem);
-	walk_page_range(mm, 0, mm->highest_vm_end, &precharge_walk_ops, NULL);
+	walk_page_range(0, mm->highest_vm_end,
+			&mem_cgroup_count_precharge_walk);
 	up_read(&mm->mmap_sem);
 
 	precharge = mc.precharge;
@@ -5755,12 +5759,13 @@ put:			/* get_mctgt_type() gets the page */
 	return ret;
 }
 
-static const struct mm_walk_ops charge_walk_ops = {
-	.pmd_entry	= mem_cgroup_move_charge_pte_range,
-};
-
 static void mem_cgroup_move_charge(void)
 {
+	struct mm_walk mem_cgroup_move_charge_walk = {
+		.pmd_entry = mem_cgroup_move_charge_pte_range,
+		.mm = mc.mm,
+	};
+
 	lru_add_drain_all();
 	/*
 	 * Signal lock_page_memcg() to take the memcg's move_lock
@@ -5786,8 +5791,7 @@ retry:
 	 * When we have consumed all precharges and failed in doing
 	 * additional charge, the page walk just aborts.
 	 */
-	walk_page_range(mc.mm, 0, mc.mm->highest_vm_end, &charge_walk_ops,
-			NULL);
+	walk_page_range(0, mc.mm->highest_vm_end, &mem_cgroup_move_charge_walk);
 
 	up_read(&mc.mm->mmap_sem);
 	atomic_dec(&mc.from->moving_account);
@@ -5816,10 +5820,9 @@ static void mem_cgroup_move_task(void)
 #ifdef CONFIG_LRU_GEN
 static void mem_cgroup_attach(struct cgroup_taskset *tset)
 {
-	struct task_struct *task;
 	struct cgroup_subsys_state *css;
+	struct task_struct *task = NULL;
 
-	/* find the first leader if there is any */
 	cgroup_taskset_for_each_leader(task, css, tset)
 		break;
 
@@ -5827,7 +5830,7 @@ static void mem_cgroup_attach(struct cgroup_taskset *tset)
 		return;
 
 	task_lock(task);
-	if (task->mm && READ_ONCE(task->mm->owner) == task)
+	if (task->mm && task->mm->owner == task)
 		lru_gen_migrate_mm(task->mm);
 	task_unlock(task);
 }

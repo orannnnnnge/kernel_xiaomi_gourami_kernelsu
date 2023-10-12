@@ -2004,6 +2004,7 @@ static int fg_gen4_get_batt_profile_dt_props(struct fg_gen4_chip *chip,
 #ifdef CONFIG_BATT_VERIFY_BY_DS28E16
 static bool is_batt_vendor_gyb;
 static bool is_batt_vendor_nvt;
+int retry_batt_profile;
 #endif
 static int fg_gen4_get_batt_profile(struct fg_dev *fg)
 {
@@ -2012,9 +2013,6 @@ static int fg_gen4_get_batt_profile(struct fg_dev *fg)
 	struct device_node *batt_node, *profile_node;
 	const char *data;
 	int rc, len, avail_age_level = 0;
-#ifdef CONFIG_BATT_VERIFY_BY_DS28E16
-	int retry_batt_profile = 0;;
-#endif
 
 	batt_node = of_find_node_by_name(node, "qcom,battery-data");
 	if (!batt_node) {

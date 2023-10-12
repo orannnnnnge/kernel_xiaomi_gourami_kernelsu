@@ -114,8 +114,7 @@ static unsigned int cs_dbs_update(struct cpufreq_policy *policy)
 		if (requested_freq > policy->max)
 			requested_freq = policy->max;
 
-		__cpufreq_driver_target(policy, requested_freq,
-					CPUFREQ_RELATION_HE);
+		__cpufreq_driver_target(policy, requested_freq, CPUFREQ_RELATION_H);
 		dbs_info->requested_freq = requested_freq;
 		goto out;
 	}
@@ -138,8 +137,7 @@ static unsigned int cs_dbs_update(struct cpufreq_policy *policy)
 		else
 			requested_freq = policy->min;
 
-		__cpufreq_driver_target(policy, requested_freq,
-					CPUFREQ_RELATION_LE);
+		__cpufreq_driver_target(policy, requested_freq, CPUFREQ_RELATION_L);
 		dbs_info->requested_freq = requested_freq;
 	}
 

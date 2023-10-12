@@ -15,6 +15,7 @@ various features of the Linux memory management
 
    swap_numa
    zswap
+   multigen_lru
 
 Kernel developers MM documentation
 ==================================
@@ -36,7 +37,6 @@ descriptions of data structures and algorithms.
    hugetlbfs_reserv
    ksm
    mmu_notifier
-   multigen_lru
    numa
    overcommit-accounting
    page_migration

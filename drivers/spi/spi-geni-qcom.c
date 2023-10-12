@@ -915,6 +915,14 @@ static int spi_geni_prepare_transfer_hardware(struct spi_master *spi)
 
 	/* Adjust the IB based on the max speed of the slave.*/
 	rsc->ib = max_speed * DEFAULT_BUS_WIDTH;
+
+	/* Client to respect system suspend */
+	if (!pm_runtime_enabled(mas->dev)) {
+		GENI_SE_ERR(mas->ipc, false, NULL,
+			"%s: System suspended\n", __func__);
+		return -EACCES;
+	}
+
 	if (mas->gsi_mode && !mas->shared_ee) {
 		struct se_geni_rsc *rsc;
 		int ret = 0;

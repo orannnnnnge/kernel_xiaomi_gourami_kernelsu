@@ -553,7 +553,7 @@ unsigned int cpufreq_driver_resolve_freq(struct cpufreq_policy *policy,
 		unsigned int idx;
 
 		idx = cpufreq_frequency_table_target(policy, target_freq,
-						     CPUFREQ_RELATION_LE);
+						     CPUFREQ_RELATION_L);
 		policy->cached_resolved_idx = idx;
 		return policy->freq_table[idx].frequency;
 	}
@@ -2188,16 +2188,8 @@ int __cpufreq_driver_target(struct cpufreq_policy *policy,
 	/* Save last value to restore later on errors */
 	policy->restore_freq = policy->cur;
 
-	if (cpufreq_driver->target) {
-		/*
-		 * If the driver hasn't setup a single inefficient frequency,
-		 * it's unlikely it knows how to decode CPUFREQ_RELATION_E.
-		 */
-		if (!policy->efficiencies_available)
-			relation &= ~CPUFREQ_RELATION_E;
-
+	if (cpufreq_driver->target)
 		return cpufreq_driver->target(policy, target_freq, relation);
-	}
 
 	if (!cpufreq_driver->target_index)
 		return -EINVAL;

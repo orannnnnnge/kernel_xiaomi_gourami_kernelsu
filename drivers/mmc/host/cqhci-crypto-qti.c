@@ -106,16 +106,30 @@ static int cqhci_crypto_qti_keyslot_program(struct keyslot_manager *ksm,
 	int err = 0;
 	u8 data_unit_mask;
 	int crypto_alg_id;
+	struct sdhci_host *sdhci = mmc_priv(host->mmc);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
+	struct sdhci_msm_host *msm_host = pltfm_host->priv;
 
 	crypto_alg_id = cqhci_crypto_cap_find(host, key->crypto_mode,
 					       key->data_unit_size);
+
+	if (!IS_ERR(msm_host->pclk) && !IS_ERR(msm_host->ice_clk)) {
+		err = clk_prepare_enable(msm_host->pclk);
+		if (err)
+			return err;
+		err = clk_prepare_enable(msm_host->ice_clk);
+		if (err)
+			return err;
+	} else {
+		pr_err("%s: Invalid clock value\n", __func__);
+		return -EINVAL;
+	}
 
 	pm_runtime_get_sync(&host->mmc->card->dev);
 
 	if (!cqhci_is_crypto_enabled(host) ||
 	    !cqhci_keyslot_valid(host, slot) ||
 	    !ice_cap_idx_valid(host, crypto_alg_id)) {
-		pm_runtime_put_sync(&host->mmc->card->dev);
 		return -EINVAL;
 	}
 
@@ -123,7 +137,6 @@ static int cqhci_crypto_qti_keyslot_program(struct keyslot_manager *ksm,
 
 	if (!(data_unit_mask &
 	      host->crypto_cap_array[crypto_alg_id].sdus_mask)) {
-		pm_runtime_put_sync(&host->mmc->card->dev);
 		return -EINVAL;
 	}
 
@@ -132,6 +145,8 @@ static int cqhci_crypto_qti_keyslot_program(struct keyslot_manager *ksm,
 	if (err)
 		pr_err("%s: failed with error %d\n", __func__, err);
 
+	clk_disable_unprepare(msm_host->pclk);
+	clk_disable_unprepare(msm_host->ice_clk);
 	pm_runtime_put_sync(&host->mmc->card->dev);
 	return err;
 }
@@ -141,20 +156,34 @@ static int cqhci_crypto_qti_keyslot_evict(struct keyslot_manager *ksm,
 					  unsigned int slot)
 {
 	int err = 0;
-	int val = 0;
 	struct cqhci_host *host = keyslot_manager_private(ksm);
+	struct sdhci_host *sdhci = mmc_priv(host->mmc);
+	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(sdhci);
+	struct sdhci_msm_host *msm_host = pltfm_host->priv;
+
+	if (!IS_ERR(msm_host->pclk) && !IS_ERR(msm_host->ice_clk)) {
+		err = clk_prepare_enable(msm_host->pclk);
+		if (err)
+			return err;
+		err = clk_prepare_enable(msm_host->ice_clk);
+		if (err)
+			return err;
+	} else {
+		pr_err("%s: Invalid clock value\n", __func__);
+		return -EINVAL;
+	}
 	pm_runtime_get_sync(&host->mmc->card->dev);
 
 	if (!cqhci_is_crypto_enabled(host) ||
-	    !cqhci_keyslot_valid(host, slot)) {
-		pm_runtime_put_sync(&host->mmc->card->dev);
+	    !cqhci_keyslot_valid(host, slot))
 		return -EINVAL;
-	}
 
 	err = crypto_qti_keyslot_evict(host->crypto_vops->priv, slot);
 	if (err)
 		pr_err("%s: failed with error %d\n", __func__, err);
 
+	clk_disable_unprepare(msm_host->pclk);
+	clk_disable_unprepare(msm_host->ice_clk);
 	pm_runtime_put_sync(&host->mmc->card->dev);
 	val = atomic_read(&keycache) & ~(1 << slot);
 	atomic_set(&keycache, val);
@@ -259,7 +288,7 @@ int cqhci_host_init_crypto_qti_spec(struct cqhci_host *host,
 		err = -ENOMEM;
 		goto out;
 	}
-	keyslot_manager_set_max_dun_bytes(host->ksm, sizeof(u32));
+	keyslot_manager_set_max_dun_bytes(host->ksm, 4);
 
 	/*
 	 * In case host controller supports cryptographic operations

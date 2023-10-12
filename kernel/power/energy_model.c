@@ -2,14 +2,13 @@
 /*
  * Energy Model of CPUs
  *
- * Copyright (c) 2018-2021, Arm ltd.
+ * Copyright (c) 2018, Arm ltd.
  * Written by: Quentin Perret, Arm ltd.
  */
 
 #define pr_fmt(fmt) "energy_model: " fmt
 
 #include <linux/cpu.h>
-#include <linux/cpufreq.h>
 #include <linux/cpumask.h>
 #include <linux/debugfs.h>
 #include <linux/energy_model.h>
@@ -40,7 +39,6 @@ static void em_debug_create_cs(struct em_cap_state *cs, struct dentry *pd)
 	debugfs_create_ulong("frequency", 0444, d, &cs->frequency);
 	debugfs_create_ulong("power", 0444, d, &cs->power);
 	debugfs_create_ulong("cost", 0444, d, &cs->cost);
-	debugfs_create_ulong("inefficient", 0444, d, &cs->flags);
 }
 
 static int em_debug_cpus_show(struct seq_file *s, void *unused)
@@ -50,17 +48,6 @@ static int em_debug_cpus_show(struct seq_file *s, void *unused)
 	return 0;
 }
 DEFINE_SHOW_ATTRIBUTE(em_debug_cpus);
-
-static int em_debug_skip_inefficiencies_show(struct seq_file *s, void *unused)
-{
-	struct em_perf_domain *pd = s->private;
-	int enabled = (pd->flags & EM_PERF_DOMAIN_SKIP_INEFFICIENCIES) ? 1 : 0;
-
-	seq_printf(s, "%d\n", enabled);
-
-	return 0;
-}
-DEFINE_SHOW_ATTRIBUTE(em_debug_skip_inefficiencies);
 
 static void em_debug_create_pd(struct em_perf_domain *pd, int cpu)
 {
@@ -74,8 +61,6 @@ static void em_debug_create_pd(struct em_perf_domain *pd, int cpu)
 	d = debugfs_create_dir(name, rootdir);
 
 	debugfs_create_file("cpus", 0444, d, pd->cpus, &em_debug_cpus_fops);
-	debugfs_create_file("skip-inefficiencies", 0444, d, pd->cpus,
-			    &em_debug_skip_inefficiencies_fops);
 
 	/* Create a sub-directory for each capacity state */
 	for (i = 0; i < pd->nr_cap_states; i++)
@@ -156,9 +141,8 @@ static struct em_perf_domain *em_create_pd(cpumask_t *span, int nr_states,
 		table[i].cost = div64_u64(fmax * power_res,
 					  table[i].frequency);
 		if (table[i].cost >= prev_cost) {
-			table[i].flags = EM_PERF_STATE_INEFFICIENT;
-			pr_debug("EM: OPP:%lu is inefficient\n",
-				table[i].frequency);
+			pr_warn("pd%d: EM: OPP:%lu is inefficient\n",
+				cpu, table[i].frequency);
 		} else {
 			prev_cost = table[i].cost;
 		}
@@ -178,40 +162,6 @@ free_pd:
 	kfree(pd);
 
 	return NULL;
-}
-
-static void em_cpufreq_update_efficiencies(cpumask_t *span)
-{
-	struct em_perf_domain *pd;
-	struct em_cap_state *table;
-	struct cpufreq_policy *policy;
-	int found = 0;
-	int i;
-
-	policy = cpufreq_cpu_get(cpumask_first(span));
-	if (!policy) {
-		pr_err("EM: Access to CPUFreq policy failed");
-		return;
-	}
-
-	table = pd->table;
-
-	for (i = 0; i < pd->nr_cap_states; i++) {
-		if (!(table[i].flags & EM_PERF_STATE_INEFFICIENT))
-			continue;
-
-		if (!cpufreq_table_set_inefficient(policy, table[i].frequency))
-			found++;
-	}
-
-	if (!found)
-		return;
-
-	/*
-	 * Efficiencies have been installed in CPUFreq, inefficient frequencies
-	 * will be skipped. The EM can do the same.
-	 */
-	pd->flags |= EM_PERF_DOMAIN_SKIP_INEFFICIENCIES;
 }
 
 /**
@@ -293,8 +243,6 @@ int em_register_perf_domain(cpumask_t *span, unsigned int nr_states,
 		 */
 		smp_store_release(per_cpu_ptr(&em_data, cpu), pd);
 	}
-
-	em_cpufreq_update_efficiencies(span);
 
 	pr_debug("Created perf domain %*pbl\n", cpumask_pr_args(span));
 unlock:

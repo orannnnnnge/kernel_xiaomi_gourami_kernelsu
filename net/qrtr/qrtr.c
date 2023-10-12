@@ -1443,7 +1443,7 @@ static int qrtr_port_assign(struct qrtr_sock *ipc, int *port)
 		if (rc >= 0)
 			*port = rc;
 	} else if (*port < QRTR_MIN_EPH_SOCKET &&
-		   !(capable(CAP_NET_ADMIN) ||
+		   !(ns_capable_noaudit(&init_user_ns, CAP_NET_ADMIN) ||
 		   in_egroup_p(AID_VENDOR_QRTR) ||
 		   in_egroup_p(GLOBAL_ROOT_GID))) {
 		rc = -EACCES;

@@ -2664,6 +2664,14 @@ static int memdesc_sg_virt(struct kgsl_memdesc *memdesc, unsigned long useraddr)
 	ret = sg_alloc_table_from_pages(memdesc->sgt, pages, npages,
 					0, memdesc->size, GFP_KERNEL);
 
+	if (ret)
+		goto out;
+
+	ret = kgsl_cache_range_op(memdesc, 0, memdesc->size,
+			KGSL_CACHE_OP_FLUSH);
+
+	if (ret)
+		sg_free_table(memdesc->sgt);
 out:
 	if (ret) {
 		for (i = 0; i < npages; i++)
@@ -5352,6 +5360,7 @@ int kgsl_of_property_read_ddrtype(struct device_node *node, const char *base,
 int kgsl_device_platform_probe(struct kgsl_device *device)
 {
 	int status = -EINVAL;
+	int cpu;
 
 	status = _register_device(device);
 	if (status)
@@ -5359,15 +5368,6 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 
 	/* Disable the sparse ioctl invocation as they are not used */
 	device->flags &= ~KGSL_FLAG_SPARSE;
-
-	device->events_wq = alloc_workqueue("kgsl-events",
-		WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS | WQ_HIGHPRI, 0);
-
-	if (!device->events_wq) {
-		dev_err(device->dev, "Failed to allocate events workqueue\n");
-		status = -ENOMEM;
-		goto error_pwrctrl_close;
-	}
 
 	kgsl_device_debugfs_init(device);
 
@@ -5452,6 +5452,25 @@ int kgsl_device_platform_probe(struct kgsl_device *device)
 				PM_QOS_CPU_DMA_LATENCY,
 				PM_QOS_DEFAULT_VALUE);
 
+	if (device->pwrctrl.l2pc_cpus_mask) {
+		struct pm_qos_request *qos = &device->pwrctrl.l2pc_cpus_qos;
+
+		qos->type = PM_QOS_REQ_AFFINE_CORES;
+
+		cpumask_empty(&qos->cpus_affine);
+		for_each_possible_cpu(cpu) {
+			if ((1 << cpu) & device->pwrctrl.l2pc_cpus_mask)
+				cpumask_set_cpu(cpu, &qos->cpus_affine);
+		}
+
+		pm_qos_add_request(&device->pwrctrl.l2pc_cpus_qos,
+				PM_QOS_CPU_DMA_LATENCY,
+				PM_QOS_DEFAULT_VALUE);
+	}
+
+	device->events_wq = alloc_workqueue("kgsl-events",
+		WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS | WQ_HIGHPRI, 0);
+
 	/* Initialize the snapshot engine */
 	kgsl_device_snapshot_init(device);
 
@@ -5473,10 +5492,7 @@ EXPORT_SYMBOL(kgsl_device_platform_probe);
 
 void kgsl_device_platform_remove(struct kgsl_device *device)
 {
-	if (device->events_wq) {
-		destroy_workqueue(device->events_wq);
-		device->events_wq = NULL;
-	}
+	destroy_workqueue(device->events_wq);
 
 	kfree(device->dev->dma_parms);
 	device->dev->dma_parms = NULL;
@@ -5485,19 +5501,11 @@ void kgsl_device_platform_remove(struct kgsl_device *device)
 
 	kgsl_exit_page_pools();
 
-	if (kgsl_driver.workqueue) {
-		destroy_workqueue(kgsl_driver.workqueue);
-		kgsl_driver.workqueue = NULL;
-	}
-
-	if (kgsl_driver.mem_workqueue) {
-		destroy_workqueue(kgsl_driver.mem_workqueue);
-		kgsl_driver.mem_workqueue = NULL;
-	}
-
 	kgsl_pwrctrl_uninit_sysfs(device);
 
 	pm_qos_remove_request(&device->pwrctrl.pm_qos_req_dma);
+	if (device->pwrctrl.l2pc_cpus_mask)
+		pm_qos_remove_request(&device->pwrctrl.l2pc_cpus_qos);
 
 	idr_destroy(&device->context_idr);
 	idr_destroy(&device->timelines);
@@ -5552,7 +5560,7 @@ void kgsl_core_exit(void)
 int __init kgsl_core_init(void)
 {
 	int result = 0;
-	struct sched_param param = { .sched_priority = 16 };
+	struct sched_param param = { .sched_priority = 2 };
 
 	/* alloc major and minor device numbers */
 	result = alloc_chrdev_region(&kgsl_driver.major, 0,
@@ -5620,20 +5628,8 @@ int __init kgsl_core_init(void)
 	kgsl_driver.workqueue = alloc_workqueue("kgsl-workqueue",
 		WQ_UNBOUND | WQ_MEM_RECLAIM | WQ_SYSFS, 0);
 
-	if (!kgsl_driver.workqueue) {
-		pr_err("kgsl: Failed to allocate kgsl workqueue\n");
-		result = -ENOMEM;
-		goto err;
-	}
-
 	kgsl_driver.mem_workqueue = alloc_workqueue("kgsl-mementry",
 		WQ_UNBOUND | WQ_MEM_RECLAIM, 0);
-
-	if (!kgsl_driver.mem_workqueue) {
-		pr_err("kgsl: Failed to allocate mem workqueue\n");
-		result = -ENOMEM;
-		goto err;
-	}
 
 	INIT_WORK(&kgsl_driver.mem_work, _flush_mem_workqueue);
 
@@ -5647,7 +5643,7 @@ int __init kgsl_core_init(void)
 		goto err;
 	}
 
-	sched_setscheduler(kgsl_driver.worker_thread, SCHED_RR, &param);
+	sched_setscheduler(kgsl_driver.worker_thread, SCHED_FIFO, &param);
 
 	kgsl_events_init();
 

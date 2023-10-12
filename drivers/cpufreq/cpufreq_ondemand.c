@@ -121,12 +121,12 @@ static void dbs_freq_increase(struct cpufreq_policy *policy, unsigned int freq)
 
 	if (od_tuners->powersave_bias)
 		freq = od_ops.powersave_bias_target(policy, freq,
-						    CPUFREQ_RELATION_HE);
+				CPUFREQ_RELATION_H);
 	else if (policy->cur == policy->max)
 		return;
 
 	__cpufreq_driver_target(policy, freq, od_tuners->powersave_bias ?
-			CPUFREQ_RELATION_LE : CPUFREQ_RELATION_HE);
+			CPUFREQ_RELATION_L : CPUFREQ_RELATION_H);
 }
 
 /*
@@ -164,9 +164,9 @@ static void od_update(struct cpufreq_policy *policy)
 		if (od_tuners->powersave_bias)
 			freq_next = od_ops.powersave_bias_target(policy,
 								 freq_next,
-								 CPUFREQ_RELATION_LE);
+								 CPUFREQ_RELATION_L);
 
-		__cpufreq_driver_target(policy, freq_next, CPUFREQ_RELATION_CE);
+		__cpufreq_driver_target(policy, freq_next, CPUFREQ_RELATION_C);
 	}
 }
 
@@ -185,7 +185,7 @@ static unsigned int od_dbs_update(struct cpufreq_policy *policy)
 	 */
 	if (sample_type == OD_SUB_SAMPLE && policy_dbs->sample_delay_ns > 0) {
 		__cpufreq_driver_target(policy, dbs_info->freq_lo,
-					CPUFREQ_RELATION_HE);
+					CPUFREQ_RELATION_H);
 		return dbs_info->freq_lo_delay_us;
 	}
 

@@ -1413,7 +1413,7 @@ static int lpm_cpuidle_select(struct cpuidle_driver *drv,
 	return cpu_power_select(dev, cpu);
 }
 
-static void __maybe_unused update_ipi_history(int cpu)
+static void update_ipi_history(int cpu)
 {
 	struct ipi_history *history = &per_cpu(cpu_ipi_history, cpu);
 	ktime_t now = ktime_get();
@@ -1727,6 +1727,7 @@ static void lpm_suspend_wake(void)
 	suspend_in_progress = false;
 	lpm_stats_suspend_exit();
 }
+
 static int lpm_suspend_enter(suspend_state_t state)
 {
 	int cpu = raw_smp_processor_id();
@@ -1849,6 +1850,8 @@ static int lpm_probe(struct platform_device *pdev)
 		goto failed;
 	}
 
+	set_update_ipi_history_callback(update_ipi_history);
+
 	/* Add lpm_debug to Minidump*/
 	strlcpy(md_entry.name, "KLPMDEBUG", sizeof(md_entry.name));
 	md_entry.virt_addr = (uintptr_t)lpm_debug;
@@ -1904,6 +1907,9 @@ static int __init lpm_levels_module_init(void)
 	if (rc)
 		pr_info("Error registering %s rc=%d\n", lpm_driver.driver.name,
 									rc);
+
+	if (!rc)
+		set_update_ipi_history_callback(update_ipi_history);
 
 	return rc;
 }

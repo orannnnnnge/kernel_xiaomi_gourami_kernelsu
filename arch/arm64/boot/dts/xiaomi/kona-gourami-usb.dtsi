@@ -17,6 +17,7 @@
 	google,force-hcmode;
 	google,otg-out-uv = <5100000>;
 	qcom,otg-cl-ua = <1500000>;
+	qcom,usb-icl-ua = <3000000>;
 	qcom,typec-legacy-rp-icl;
 	qcom,chg-term-current-ma = <(-190)>;
 };
